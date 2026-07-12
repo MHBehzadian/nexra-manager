@@ -64,6 +64,12 @@ def _make_admin_guard(admin_id: int):
     def admin_only(handler):
         @functools.wraps(handler)
         async def wrapper(event):
+            # The control bot only talks in private chats with the admin. Ignore
+            # anything else — e.g. posts in the numbers channel, which the bot
+            # receives because it is a channel admin. Without this, it would spam
+            # "you're not allowed" replies into the channel.
+            if isinstance(event, events.NewMessage.Event) and not event.is_private:
+                return
             sender_id = event.sender_id
             if sender_id != admin_id:
                 log.warning(
