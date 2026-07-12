@@ -1,0 +1,57 @@
+[project]
+name = "telegram-automation"
+version = "0.1.0"
+description = "Production-grade Telegram automation tool (multi-session forwarding & management)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Mohammad Hassan" }]
+license = { text = "MIT" }
+
+dependencies = [
+    # --- Telegram core ---
+    # Telethon is chosen over Pyrogram: more mature multi-session handling,
+    # battle-tested StringSession support for storing many user accounts,
+    # and a very stable events/forward_messages API. See README for details.
+    "telethon>=1.36,<2.0",
+
+    # --- Config / env ---
+    "python-dotenv>=1.0.1",
+
+    # --- Async IO ---
+    # NOTE: asyncio is part of the Python standard library — no need to install it.
+    "aiofiles>=24.1.0",
+
+    # --- Logging ---
+    "loguru>=0.7.2",
+
+    # --- TUI / pretty terminal ---
+    "rich>=13.7.0",
+
+    # --- Database (kept light for now; final choice deferred) ---
+    "sqlalchemy[asyncio]>=2.0.30",
+    "aiosqlite>=0.20.0",
+
+    # --- Timezone data (Asia/Tehran on Windows) ---
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24.0.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+tg-automation = "main:cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

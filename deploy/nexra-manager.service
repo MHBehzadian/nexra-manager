@@ -1,0 +1,18 @@
+[Unit]
+Description=nexra manager — Telegram automation bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User/paths if you cloned somewhere other than /opt/telegram-automation.
+User=root
+WorkingDirectory=/opt/telegram-automation
+ExecStart=/opt/telegram-automation/.venv/bin/python -u main.py
+Restart=always
+RestartSec=5
+# The app configures itself from .env; it must exist before enabling the service.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

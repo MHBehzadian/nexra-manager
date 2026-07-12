@@ -1,0 +1,37 @@
+# Secrets
+.env
+
+# Telethon sessions (contain login credentials — NEVER commit)
+*.session
+*.session-journal
+sessions/
+accounts/*.session
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Account metadata (contains phone numbers — sensitive)
+data/
+*.corrupt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

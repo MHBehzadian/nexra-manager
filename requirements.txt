@@ -1,0 +1,21 @@
+# Telegram core (Telethon chosen — see README for rationale)
+telethon>=1.36,<2.0
+
+# Config / env
+python-dotenv>=1.0.1
+
+# Async file IO (asyncio itself ships with the Python stdlib)
+aiofiles>=24.1.0
+
+# Logging
+loguru>=0.7.2
+
+# TUI / pretty terminal
+rich>=13.7.0
+
+# Database (light default; final choice deferred)
+sqlalchemy[asyncio]>=2.0.30
+aiosqlite>=0.20.0
+
+# IANA timezone data (needed for Asia/Tehran on Windows)
+tzdata>=2024.1
