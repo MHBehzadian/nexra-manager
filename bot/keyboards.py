@@ -54,17 +54,15 @@ def main_menu() -> list[list[Button]]:
     """The primary admin menu shown after /start."""
     return [
         [
-            Button.inline("📊 وضعیت", CB_STATUS),
             Button.inline("👤 اکانت‌ها", CB_ACCOUNTS),
-        ],
-        [
             Button.inline("📇 شماره‌ها", CB_NUMBERS),
-            Button.inline("🚀 کمپین", CB_CAMPAIGN),
         ],
+        [Button.inline("🚀 کمپین ارسال", CB_CAMPAIGN)],
         [
+            Button.inline("📊 وضعیت", CB_STATUS),
             Button.inline("⚙️ تنظیمات", CB_SETTINGS),
-            Button.inline("❓ راهنما", CB_HELP),
         ],
+        [Button.inline("❓ راهنما", CB_HELP)],
     ]
 
 
@@ -77,10 +75,14 @@ def campaign_menu(running: bool) -> list[list[Button]]:
     )
     return [
         [toggle],
-        [Button.inline("🔄 به‌روزرسانی مدیا از کانال", CB_CMP_MEDIA)],
-        [Button.inline("⏱ تنظیم زمان ارسال ویس", CB_CMP_VOICE_DELAY)],
-        [Button.inline("📮 تنظیم کانال گزارش", CB_CMP_REPORT_CH)],
-        [Button.inline("📊 وضعیت کمپین", CB_CMP_STATUS)],
+        [
+            Button.inline("🔄 مدیا", CB_CMP_MEDIA),
+            Button.inline("📊 وضعیت کمپین", CB_CMP_STATUS),
+        ],
+        [
+            Button.inline("⏱ زمان ویس", CB_CMP_VOICE_DELAY),
+            Button.inline("📮 کانال گزارش", CB_CMP_REPORT_CH),
+        ],
         [
             Button.inline("💾 بکاپ الان", CB_CMP_BACKUP),
             Button.inline("📈 گزارش الان", CB_CMP_REPORT),
@@ -113,9 +115,11 @@ def numbers_menu(has_channel: bool) -> list[list[Button]]:
     set_label = "🔧 تغییر کانال" if has_channel else "🔧 تنظیم کانال"
     return [
         [Button.inline(set_label, CB_CH_SET)],
-        [Button.inline("🔗 عضویت همه‌ی اکانت‌ها در کانال", CB_CH_JOINALL)],
-        [Button.inline("📥 خواندن شماره‌ها از کانال", CB_NUM_READ)],
-        [Button.inline("📊 آمار شماره‌ها", CB_NUM_STATS)],
+        [Button.inline("🔗 عضویت همه‌ی اکانت‌ها", CB_CH_JOINALL)],
+        [
+            Button.inline("📥 خواندن شماره‌ها", CB_NUM_READ),
+            Button.inline("📊 آمار", CB_NUM_STATS),
+        ],
         [Button.inline("⬅️ بازگشت به منو", CB_HOME)],
     ]
 

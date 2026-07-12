@@ -16,6 +16,7 @@ The coordinator is the single hub the bot handlers talk to; it ties together
 from __future__ import annotations
 
 import contextlib
+import html
 import re
 from dataclasses import dataclass, field
 
@@ -92,6 +93,8 @@ class AccountCoordinator:
         # edit channel messages (members can't edit channel posts; the bot,
         # as a channel admin, can) and to DM/post reports.
         self.bot_client = None
+        # So we surface the exact channel-edit error to the admin only once.
+        self._edit_error_notified = False
 
     # ------------------------------------------------------------------ #
     # Channel configuration
@@ -118,11 +121,14 @@ class AccountCoordinator:
     # Admin / report-channel notifications
     # ------------------------------------------------------------------ #
     def _notify_targets(self) -> list:
-        """Where notifications go: the admin DM plus the report channel if set."""
-        targets: list = [self.settings.admin_id]
+        """Where reports/notices go.
+
+        If a report channel is configured, everything goes there ONLY. Otherwise
+        it falls back to the admin's private chat.
+        """
         if self.report_channel_id:
-            targets.append(_channel_ref(self.report_channel_id))
-        return targets
+            return [_channel_ref(self.report_channel_id)]
+        return [self.settings.admin_id]
 
     async def notify(self, text: str) -> None:
         """Send a text notice to the admin (and the report channel, if set)."""
@@ -321,7 +327,18 @@ class AccountCoordinator:
         try:
             entity = await self.get_channel_entity(self.bot_client)
             await self.bot_client.edit_message(entity, message_id, new_text)
+            self._edit_error_notified = False
             return True
         except Exception as exc:
             log.warning("Could not edit channel message {} for {}: {}", message_id, phone, exc)
+            # Surface the exact reason to the admin/report channel once, so a
+            # missing "Edit Messages" permission is obvious.
+            if not self._edit_error_notified:
+                self._edit_error_notified = True
+                await self.notify(
+                    "⚠️ <b>ادیت پیام کانال ناموفق بود</b>\n"
+                    f"خطا: <code>{type(exc).__name__}</code>\n"
+                    f"جزئیات: {html.escape(str(exc))}\n\n"
+                    "معمولاً یعنی بات در کانال شماره‌ها دسترسی «Edit Messages» ندارد."
+                )
             return False
