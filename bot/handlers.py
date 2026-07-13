@@ -25,6 +25,7 @@ import re
 from datetime import datetime, timezone
 
 from telethon import TelegramClient, events
+from telethon.tl.types import Channel, Chat
 from telethon.errors import (
     FloodWaitError,
     PasswordHashInvalidError,
@@ -143,7 +144,9 @@ _HELP_TEXT = (
     "<b>بخش‌ها:</b>\n"
     "• 👤 اکانت‌ها — افزودن/لیست/حذف اکانت\n"
     "• 📇 شماره‌ها — تنظیم کانال، عضویت اکانت‌ها، خواندن و آمار شماره‌ها\n"
-    "• 🚀 کمپین — به‌روزرسانی مدیا، شروع/توقف ارسال، و وضعیت"
+    "• 🚀 کمپین — تنظیم مدیا، شروع/توقف ارسال، و وضعیت\n\n"
+    "🔎 <b>تست عضویت بات در کانال:</b> یک پیام را از کانال برایم فوروارد کن؛ "
+    "اگر بتوانم آنجا پیام بگذارم، تأیید می‌کنم."
 )
 
 
@@ -1076,15 +1079,50 @@ def register_handlers(
 
         raise events.StopPropagation
 
+    # --- Channel-membership test (forward a channel post to the bot) ------ #
+    async def _channel_join_test(event) -> None:
+        fwd = event.message.forward
+        try:
+            chat = await fwd.get_chat()
+        except Exception:
+            chat = None
+        if not isinstance(chat, (Channel, Chat)):
+            await event.respond(
+                "⚠️ این پیام از یک کانال فوروارد نشده (یا منبعش مخفی است).\n"
+                "یک پیام را از داخل کانال به من فوروارد کن."
+            )
+            return
+        title = getattr(chat, "title", None) or "کانال"
+        try:
+            await event.client.send_message(chat, "🤖 ربات call center فعال می‌باشد ✅")
+            await event.respond(
+                f"✅ تأیید شد — بات در «{html.escape(title)}» عضو است و می‌تواند پیام بگذارد.\n"
+                "یک پیام تأیید در کانال ارسال شد.",
+                parse_mode="html",
+            )
+        except Exception as exc:
+            await event.respond(
+                f"⛔️ بات نتوانست در «{html.escape(title)}» پیام بگذارد.\n"
+                f"خطا: <code>{type(exc).__name__}</code>\n"
+                "یعنی بات در آن کانال ادمین با دسترسی «Post/Edit Messages» نیست.",
+                parse_mode="html",
+            )
+
     # --- Fallback for any other admin text -------------------------------- #
     @client.on(events.NewMessage)
     @admin_only
     async def _fallback(event):
+        # Forwarded from a channel → run the membership/post test.
+        if event.message.forward is not None:
+            await _channel_join_test(event)
+            return
         if event.raw_text.startswith("/"):
             return
         await event.respond(
-            "از /menu برای باز کردن منوی اصلی استفاده کن.",
+            "از /menu برای باز کردن منوی اصلی استفاده کن.\n"
+            "<i>نکته: برای تست عضویت، یک پیام از کانال را برایم فوروارد کن.</i>",
             buttons=keyboards.main_menu(),
+            parse_mode="html",
         )
 
     log.info("Handlers registered (admin_id={}).", settings.admin_id)
