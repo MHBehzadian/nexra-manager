@@ -83,9 +83,8 @@ def campaign_menu(running: bool) -> list[list[Button]]:
         ],
         [
             Button.inline("⏱ زمان ویس", CB_CMP_VOICE_DELAY),
-            Button.inline("✍️ متن همراه ویس", CB_CMP_VOICE_TEXT),
+            Button.inline("📮 کانال گزارش", CB_CMP_REPORT_CH),
         ],
-        [Button.inline("📮 کانال گزارش", CB_CMP_REPORT_CH)],
         [
             Button.inline("💾 بکاپ الان", CB_CMP_BACKUP),
             Button.inline("📈 گزارش الان", CB_CMP_REPORT),

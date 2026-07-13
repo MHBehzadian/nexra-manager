@@ -376,17 +376,16 @@ class SenderEngine:
         await self._delete_contact(client, user)
 
     async def _send_voice(self, client, user) -> None:
+        """Send the forwarded media items in the exact order they were added."""
         await self._wait_for_window()
-        media = self.media.load()
-        for voice_path in media["voices"]:
-            await self._safe_send(client.send_file, user, voice_path, voice_note=True)
-        # Optional text message sent alongside the voice.
-        voice_text = self.cfg.voice_text()
-        if voice_text:
-            await self._safe_send(client.send_message, user, voice_text)
-        images = media["images"]
-        for i in range(0, len(images), _ALBUM_CHUNK):
-            await self._safe_send(client.send_file, user, images[i : i + _ALBUM_CHUNK])
+        for item in self.media.load():
+            kind = item["type"]
+            if kind == "voice":
+                await self._safe_send(client.send_file, user, item["path"], voice_note=True)
+            elif kind == "image":
+                await self._safe_send(client.send_file, user, item["path"])
+            elif kind == "text":
+                await self._safe_send(client.send_message, user, item["text"])
 
     # ------------------------------------------------------------------ #
     # Failure handling
