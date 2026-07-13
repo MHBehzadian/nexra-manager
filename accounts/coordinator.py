@@ -281,8 +281,8 @@ class AccountCoordinator:
                     if message.id > max_id:
                         max_id = message.id
                     text = message.message or ""  # voice/media messages have no text
-                    # Skip messages already marked as taken ("Task").
-                    if TASK_MARKER in text:
+                    # Skip messages already marked as taken ("Task", any case).
+                    if TASK_MARKER.lower() in text.lower():
                         continue
                     for match in PHONE_IN_TEXT_RE.findall(text):
                         batch.append((match, message.id, text[:512]))

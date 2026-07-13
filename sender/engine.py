@@ -121,8 +121,11 @@ class SenderEngine:
         self._clients: dict[str, object] = {}     # account phone -> TelegramClient
         self._accounts: list[dict] = []           # rotation of active accounts
         self._rot = 0
-        # account phone -> UTC time its temporary cooldown ends
+        # account phone -> UTC time its temporary limit cooldown ends (~hours)
         self._cooldowns: dict[str, datetime] = {}
+        # account phone -> UTC time it is next allowed to send (normal per-account
+        # rest of 40 min – 2 h between numbers, so one account isn't overused)
+        self._next_ready: dict[str, datetime] = {}
         # Numbers greeted-but-not-voiced that need finishing (voice only).
         # Filled once at startup and appended to on phase-2 account failures.
         # In-memory so in-flight numbers are never resumed by another account.
@@ -175,6 +178,7 @@ class SenderEngine:
 
         self._rot = 0
         self._cooldowns.clear()
+        self._next_ready.clear()
         self._exhausted_notified = False
         self._running = True
         self._dispatcher = asyncio.create_task(self._dispatcher_loop(), name="dispatcher")
@@ -230,8 +234,14 @@ class SenderEngine:
         self._clients.clear()
         self._accounts.clear()
 
+    def _available_at(self, phone: str, now: datetime) -> datetime:
+        """When this account may next send (max of its cooldown and rest times)."""
+        ends = [t for t in (self._cooldowns.get(phone), self._next_ready.get(phone)) if t]
+        future = [t for t in ends if t > now]
+        return max(future) if future else now
+
     def _next_account(self) -> dict | None:
-        """Next account in rotation that is not currently on cooldown."""
+        """Next account in rotation that is neither cooled-down nor resting."""
         if not self._accounts:
             return None
         now = _utcnow()
@@ -239,19 +249,23 @@ class SenderEngine:
             self._rot %= len(self._accounts)
             acc = self._accounts[self._rot]
             self._rot += 1
-            until = self._cooldowns.get(acc.get("phone"))
-            if until is not None and until > now:
-                continue  # resting — skip
-            return acc
-        return None  # every account is on cooldown right now
+            if self._available_at(acc.get("phone"), now) <= now:
+                return acc
+        return None  # everyone is resting / on cooldown right now
 
-    def _soonest_cooldown_wait(self) -> float:
-        """Seconds until the earliest cooldown ends (capped by the caller)."""
+    def _mark_rested(self, phone: str) -> None:
+        """Rest an account 40 min – 2 h after it takes a number."""
+        secs = content.random_delay(content.BETWEEN_NUMBERS)
+        self._next_ready[phone] = _utcnow() + timedelta(seconds=secs)
+
+    def _soonest_available_wait(self) -> float:
+        """Seconds until the earliest account becomes available (capped by caller)."""
         now = _utcnow()
-        ends = [t for t in self._cooldowns.values() if t > now]
-        if not ends:
-            return content.IDLE_POLL_SECONDS
-        return max(1.0, (min(ends) - now).total_seconds())
+        avail = [self._available_at(a.get("phone"), now) for a in self._accounts]
+        future = [t for t in avail if t > now]
+        if not future:
+            return 1.0
+        return max(1.0, (min(future) - now).total_seconds())
 
     def _spawn(self, coro) -> None:
         task = asyncio.create_task(coro)
@@ -271,9 +285,9 @@ class SenderEngine:
                     if not self._accounts:
                         await self._notify_admin("⛔️ اکانت فعالی باقی نمانده؛ کمپین متوقف شد.")
                         break
-                    # All accounts are resting → wait until the soonest recovers.
-                    wait = self._soonest_cooldown_wait()
-                    log.info("All accounts on cooldown — sleeping {:.0f}s.", wait)
+                    # Everyone is resting/cooling down → wait until one is ready.
+                    wait = self._soonest_available_wait()
+                    log.info("All accounts resting — sleeping {:.0f}s.", wait)
                     await asyncio.sleep(min(wait, 300))
                     continue
                 acct_phone = account["phone"]
@@ -284,6 +298,7 @@ class SenderEngine:
                 if self._resume_queue:
                     resume = self._resume_queue.popleft()
                     self._exhausted_notified = False
+                    self._mark_rested(acct_phone)
                     self._spawn(self._resume_voice(account, resume))
                     await asyncio.sleep(content.DISPATCH_GAP_SECONDS)
                     continue
@@ -291,15 +306,17 @@ class SenderEngine:
                 async with self._claim_lock:
                     phone = await self.db.claim_next_pending(acct_phone)
                 if phone is None:
+                    # Queue empty — don't rest the account for nothing.
                     await self._maybe_notify_exhausted()
                     await asyncio.sleep(content.IDLE_POLL_SECONDS)
                     continue
 
                 self._exhausted_notified = False
+                self._mark_rested(acct_phone)
                 log.info("[dispatch] {} → {}", account.get("session_name"), phone)
                 self._spawn(self._process(account, phone))
 
-                # 1-minute gap before the next number/account.
+                # Global 1-minute gap before the next number/account.
                 await asyncio.sleep(content.DISPATCH_GAP_SECONDS)
         except asyncio.CancelledError:
             raise
@@ -444,6 +461,7 @@ class SenderEngine:
         await self.store.update_status(name, "inactive")
         self._accounts = [a for a in self._accounts if a.get("phone") != phone]
         self._cooldowns.pop(phone, None)
+        self._next_ready.pop(phone, None)
         client = self._clients.pop(phone, None)
         if client is not None:
             try:
