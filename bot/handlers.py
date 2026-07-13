@@ -1079,7 +1079,9 @@ def register_handlers(
 
         raise events.StopPropagation
 
-    # --- Channel-membership test (forward a channel post to the bot) ------ #
+    # --- Channel test (forward a channel post to the bot) ----------------- #
+    #     Works for BOTH the numbers channel and the report channel. Tests
+    #     posting AND editing (the bot edits its own message).
     async def _channel_join_test(event) -> None:
         fwd = event.message.forward
         try:
@@ -1093,20 +1095,39 @@ def register_handlers(
             )
             return
         title = getattr(chat, "title", None) or "کانال"
+
+        # 1) Post test.
+        base = "🤖 ربات call center فعال می‌باشد ✅"
         try:
-            await event.client.send_message(chat, "🤖 ربات call center فعال می‌باشد ✅")
-            await event.respond(
-                f"✅ تأیید شد — بات در «{html.escape(title)}» عضو است و می‌تواند پیام بگذارد.\n"
-                "یک پیام تأیید در کانال ارسال شد.",
-                parse_mode="html",
-            )
+            sent = await event.client.send_message(chat, base)
         except Exception as exc:
             await event.respond(
                 f"⛔️ بات نتوانست در «{html.escape(title)}» پیام بگذارد.\n"
                 f"خطا: <code>{type(exc).__name__}</code>\n"
-                "یعنی بات در آن کانال ادمین با دسترسی «Post/Edit Messages» نیست.",
+                "بات باید در این کانال ادمین با دسترسی «Post Messages» باشد.",
                 parse_mode="html",
             )
+            return
+
+        # 2) Edit test (edit the bot's own message).
+        edit_ok, edit_err = True, None
+        try:
+            await event.client.edit_message(chat, sent.id, base + "\n\n📝 ویرایش هم فعال است ✅")
+        except Exception as exc:
+            edit_ok, edit_err = False, type(exc).__name__
+
+        lines = [
+            f"✅ <b>ارسال پیام</b> در «{html.escape(title)}» موفق بود — بات عضو/ادمین است.",
+        ]
+        if edit_ok:
+            lines.append("✅ <b>ویرایش پیام</b> فعال است (Edit Messages).")
+        else:
+            lines.append(
+                f"⛔️ <b>ویرایش پیام</b> کار نکرد (<code>{edit_err}</code>).\n"
+                "تیک «Edit Messages» را در دسترسی ادمینِ بات روشن کن "
+                "(برای نوشتن Task زیر شماره‌ها لازم است)."
+            )
+        await event.respond("\n".join(lines), parse_mode="html")
 
     # --- Fallback for any other admin text -------------------------------- #
     @client.on(events.NewMessage)
