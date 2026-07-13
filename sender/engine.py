@@ -380,6 +380,10 @@ class SenderEngine:
         media = self.media.load()
         for voice_path in media["voices"]:
             await self._safe_send(client.send_file, user, voice_path, voice_note=True)
+        # Optional text message sent alongside the voice.
+        voice_text = self.cfg.voice_text()
+        if voice_text:
+            await self._safe_send(client.send_message, user, voice_text)
         images = media["images"]
         for i in range(0, len(images), _ALBUM_CHUNK):
             await self._safe_send(client.send_file, user, images[i : i + _ALBUM_CHUNK])

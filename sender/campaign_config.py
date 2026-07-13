@@ -36,6 +36,11 @@ class CampaignConfig:
             log.exception("Could not read campaign.json — using defaults")
             return {}
 
+    def _write(self, data: dict) -> None:
+        self._path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
     def voice_delay(self) -> tuple[int, int]:
         """Return the (min, max) seconds gap between greeting and voice."""
         data = self._read()
@@ -51,7 +56,20 @@ class CampaignConfig:
         data = self._read()
         data["voice_delay_min"] = int(min_seconds)
         data["voice_delay_max"] = int(max_seconds)
-        self._path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        self._write(data)
         log.info("Voice delay set to {}–{}s", min_seconds, max_seconds)
+
+    def voice_text(self) -> str | None:
+        """Optional text message sent together with the voice (phase 2)."""
+        data = self._read()
+        text = data.get("voice_text")
+        return text if isinstance(text, str) and text.strip() else None
+
+    def set_voice_text(self, text: str | None) -> None:
+        data = self._read()
+        if text and text.strip():
+            data["voice_text"] = text.strip()
+        else:
+            data.pop("voice_text", None)
+        self._write(data)
+        log.info("Voice accompanying text {}", "set" if text else "cleared")

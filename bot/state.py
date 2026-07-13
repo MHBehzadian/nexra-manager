@@ -49,12 +49,24 @@ class SetReportChannelConversation:
     """Single-step flow: waiting for the admin to send the report-channel id."""
 
 
+@dataclass
+class SetVoiceTextConversation:
+    """Single-step flow: waiting for the admin to send the voice-accompanying text."""
+
+
+@dataclass
+class CollectMediaConversation:
+    """The admin forwards voice/image messages to the bot; it saves them."""
+
+
 # Any supported conversation type.
 Conversation = (
     AddAccountConversation
     | SetChannelConversation
     | SetVoiceDelayConversation
     | SetReportChannelConversation
+    | SetVoiceTextConversation
+    | CollectMediaConversation
 )
 
 
@@ -87,6 +99,16 @@ class StateManager:
 
     def start_set_report_channel(self, user_id: int) -> SetReportChannelConversation:
         conv = SetReportChannelConversation()
+        self._states[user_id] = conv
+        return conv
+
+    def start_set_voice_text(self, user_id: int) -> SetVoiceTextConversation:
+        conv = SetVoiceTextConversation()
+        self._states[user_id] = conv
+        return conv
+
+    def start_collect_media(self, user_id: int) -> CollectMediaConversation:
+        conv = CollectMediaConversation()
         self._states[user_id] = conv
         return conv
 

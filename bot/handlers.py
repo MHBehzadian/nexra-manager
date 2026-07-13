@@ -41,9 +41,11 @@ from . import keyboards
 from .state import (
     AddAccountConversation,
     AddStep,
+    CollectMediaConversation,
     SetChannelConversation,
     SetReportChannelConversation,
     SetVoiceDelayConversation,
+    SetVoiceTextConversation,
     StateManager,
 )
 
@@ -263,7 +265,7 @@ def register_handlers(
         media_line = (
             f"🎙 مدیا: <b>{len(media['voices'])}</b> ویس، <b>{len(media['images'])}</b> تصویر"
             if (media["voices"] or media["images"])
-            else "🎙 مدیا: <b>آماده نیست</b> (دکمه‌ی «به‌روزرسانی مدیا» را بزن)"
+            else "🎙 مدیا: <b>آماده نیست</b> (دکمه‌ی «تنظیم مدیا» را بزن و فوروارد کن)"
         )
         state_line = "🟢 در حال اجرا" if running else "⛔️ متوقف"
         report_ch = coordinator.report_channel_id or "(تنظیم‌نشده)"
@@ -565,9 +567,72 @@ def register_handlers(
         state.clear(event.sender_id)
         await event.respond(
             f"✅ کانال گزارش تنظیم شد:\n<code>{html.escape(norm or '')}</code>\n\n"
-            "از این پس گزارش‌ها و بکاپ‌ها به این کانال هم ارسال می‌شوند.\n"
+            "از این پس گزارش‌ها و بکاپ‌ها فقط به این کانال ارسال می‌شوند.\n"
             "<i>بات باید در این کانال ادمین باشد.</i>",
             buttons=keyboards.campaign_menu(engine.is_running),
+            parse_mode="html",
+        )
+
+    # ---- set voice-text step -------------------------------------------- #
+    async def _step_set_voice_text(event, text: str) -> None:
+        value = (event.raw_text or "").strip()
+        if value in {"-", "off", "حذف", "خالی"}:
+            engine.cfg.set_voice_text(None)
+            state.clear(event.sender_id)
+            await event.respond(
+                "✅ متن همراه ویس حذف شد.",
+                buttons=keyboards.campaign_menu(engine.is_running),
+            )
+            return
+        if not value:
+            await event.respond(
+                "⚠️ متن خالی است. یک متن بفرست (یا «-» برای حذف):",
+                buttons=keyboards.cancel_campaign(),
+            )
+            return
+        engine.cfg.set_voice_text(value)
+        state.clear(event.sender_id)
+        await event.respond(
+            "✅ متن همراه ویس ذخیره شد. همراه ویس برای هر نفر ارسال می‌شود:\n\n"
+            f"<i>{html.escape(value)}</i>",
+            buttons=keyboards.campaign_menu(engine.is_running),
+            parse_mode="html",
+        )
+
+    # ---- collect-media step (admin forwards voice/images) --------------- #
+    async def _step_collect_media(event, conv: CollectMediaConversation) -> None:
+        text = (event.raw_text or "").strip().lower()
+        if text in _CANCEL_WORDS:
+            state.clear(event.sender_id)
+            await event.respond(
+                "✅ لغو شد. مدیای قبلی دست‌نخورده ماند.",
+                buttons=keyboards.campaign_menu(engine.is_running),
+            )
+            return
+        if text in {"تمام", "done", "/done", "پایان", "اتمام"}:
+            result = engine.media.commit_collection()
+            state.clear(event.sender_id)
+            await event.respond(
+                f"✅ مدیا ذخیره شد: <b>{result['voices']}</b> ویس و "
+                f"<b>{result['images']}</b> تصویر.",
+                buttons=keyboards.campaign_menu(engine.is_running),
+                parse_mode="html",
+            )
+            return
+        kind = await engine.media.add_from_message(event.message)
+        if kind is None:
+            await event.respond(
+                "⚠️ فقط <b>ویس</b> یا <b>تصویر</b> بفرست (یا «✅ پایان و ذخیره»).",
+                buttons=keyboards.media_collect(),
+                parse_mode="html",
+            )
+            return
+        c = engine.media.collected
+        await event.respond(
+            f"✅ ذخیره شد ({'ویس' if kind == 'voice' else 'تصویر'}).\n"
+            f"تا الان: <b>{c['voices']}</b> ویس، <b>{c['images']}</b> تصویر.\n"
+            "بقیه را بفرست، یا «✅ پایان و ذخیره».",
+            buttons=keyboards.media_collect(),
             parse_mode="html",
         )
 
@@ -583,6 +648,11 @@ def register_handlers(
         if conv is None:
             return  # not in a conversation → let other handlers run
 
+        # Media collection consumes forwarded media (no text) and a few keywords.
+        if isinstance(conv, CollectMediaConversation):
+            await _step_collect_media(event, conv)
+            raise events.StopPropagation
+
         text = (event.raw_text or "").strip()
 
         if text.lower() in _CANCEL_WORDS:
@@ -590,7 +660,10 @@ def register_handlers(
             if isinstance(cleared, AddAccountConversation):
                 await _discard_conversation(cleared, remove_session=True)
                 await event.respond("✅ عملیات لغو شد.", buttons=keyboards.accounts_menu())
-            elif isinstance(cleared, (SetVoiceDelayConversation, SetReportChannelConversation)):
+            elif isinstance(
+                cleared,
+                (SetVoiceDelayConversation, SetReportChannelConversation, SetVoiceTextConversation),
+            ):
                 await event.respond(
                     "✅ عملیات لغو شد.", buttons=keyboards.campaign_menu(engine.is_running)
                 )
@@ -615,6 +688,8 @@ def register_handlers(
                 await _step_set_voice_delay(event, text)
             elif isinstance(conv, SetReportChannelConversation):
                 await _step_set_report_channel(event, text)
+            elif isinstance(conv, SetVoiceTextConversation):
+                await _step_set_voice_text(event, text)
             elif conv.step is AddStep.NAME:
                 await _step_name(event, conv, text)
             elif conv.step is AddStep.PHONE:
@@ -816,24 +891,59 @@ def register_handlers(
             # If we came here via the ❌ لغو button, drop any pending input state.
             if isinstance(
                 state.get(event.sender_id),
-                (SetVoiceDelayConversation, SetReportChannelConversation),
+                (
+                    SetVoiceDelayConversation,
+                    SetReportChannelConversation,
+                    SetVoiceTextConversation,
+                    CollectMediaConversation,
+                ),
             ):
                 state.clear(event.sender_id)
             await _show_campaign_menu(event)
 
         elif data == keyboards.CB_CMP_MEDIA:
             await event.answer()
-            await event.edit("⏳ در حال دانلود مدیا از کانال…", parse_mode="html")
-            summary = await engine.media.refresh(coordinator)
-            if summary.get("error"):
-                text = f"⚠️ خطا در به‌روزرسانی مدیا:\n{html.escape(summary['error'])}"
-            else:
-                text = (
-                    "✅ مدیا به‌روزرسانی شد:\n\n"
-                    f"🎙 ویس: <b>{summary['voices']}</b>\n"
-                    f"🖼 تصویر: <b>{summary['images']}</b>"
+            state.clear(event.sender_id)
+            state.start_collect_media(event.sender_id)
+            engine.media.begin_collection()
+            await event.edit(
+                "🎙 <b>تنظیم مدیا</b>\n\n"
+                "ویس(ها) و تصویر(های) موردنظر را همین‌جا برای بات بفرست یا فوروارد کن.\n"
+                "هر کدام را می‌فرستی ذخیره می‌شود.\n\n"
+                "وقتی تمام شد، «✅ پایان و ذخیره» را بزن.\n"
+                "<i>مدیای قبلی پاک شد و مجموعه‌ی جدید ساخته می‌شود.</i>",
+                buttons=keyboards.media_collect(),
+                parse_mode="html",
+            )
+
+        elif data == keyboards.CB_CMP_MEDIA_DONE:
+            await event.answer()
+            if isinstance(state.get(event.sender_id), CollectMediaConversation):
+                result = engine.media.commit_collection()
+                state.clear(event.sender_id)
+                await event.edit(
+                    f"✅ مدیا ذخیره شد: <b>{result['voices']}</b> ویس و "
+                    f"<b>{result['images']}</b> تصویر.",
+                    buttons=keyboards.campaign_back(),
+                    parse_mode="html",
                 )
-            await event.edit(text, buttons=keyboards.campaign_back(), parse_mode="html")
+            else:
+                await _show_campaign_menu(event)
+
+        elif data == keyboards.CB_CMP_VOICE_TEXT:
+            await event.answer()
+            state.clear(event.sender_id)
+            state.start_set_voice_text(event.sender_id)
+            current = engine.cfg.voice_text()
+            cur_line = f"<i>{html.escape(current)}</i>" if current else "(تنظیم‌نشده)"
+            await event.edit(
+                "✍️ <b>متن همراه ویس</b>\n\n"
+                f"مقدار فعلی: {cur_line}\n\n"
+                "متنی که کنار ویس برای هر نفر ارسال شود را بفرست.\n"
+                "برای حذف، «-» بفرست.",
+                buttons=keyboards.cancel_campaign(),
+                parse_mode="html",
+            )
 
         elif data == keyboards.CB_CMP_START:
             # Explicit confirmation before launching ("با تایید من").

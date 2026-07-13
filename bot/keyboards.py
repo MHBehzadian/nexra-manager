@@ -29,9 +29,11 @@ CB_CMP_STOP = b"cmp:stop"
 CB_CMP_MEDIA = b"cmp:media"
 CB_CMP_STATUS = b"cmp:status"
 CB_CMP_VOICE_DELAY = b"cmp:vdelay"
+CB_CMP_VOICE_TEXT = b"cmp:vtext"
 CB_CMP_BACKUP = b"cmp:backup"
 CB_CMP_REPORT = b"cmp:report"
 CB_CMP_REPORT_CH = b"cmp:reportch"
+CB_CMP_MEDIA_DONE = b"cmp:mediadone"
 
 # --- Accounts submenu ------------------------------------------------------ #
 CB_ACC_LIST = b"acc:list"
@@ -76,18 +78,27 @@ def campaign_menu(running: bool) -> list[list[Button]]:
     return [
         [toggle],
         [
-            Button.inline("🔄 مدیا", CB_CMP_MEDIA),
-            Button.inline("📊 وضعیت کمپین", CB_CMP_STATUS),
+            Button.inline("🎙 تنظیم مدیا (فوروارد)", CB_CMP_MEDIA),
+            Button.inline("📊 وضعیت", CB_CMP_STATUS),
         ],
         [
             Button.inline("⏱ زمان ویس", CB_CMP_VOICE_DELAY),
-            Button.inline("📮 کانال گزارش", CB_CMP_REPORT_CH),
+            Button.inline("✍️ متن همراه ویس", CB_CMP_VOICE_TEXT),
         ],
+        [Button.inline("📮 کانال گزارش", CB_CMP_REPORT_CH)],
         [
             Button.inline("💾 بکاپ الان", CB_CMP_BACKUP),
             Button.inline("📈 گزارش الان", CB_CMP_REPORT),
         ],
         [Button.inline("⬅️ بازگشت به منو", CB_HOME)],
+    ]
+
+
+def media_collect() -> list[list[Button]]:
+    """Shown while collecting forwarded media."""
+    return [
+        [Button.inline("✅ پایان و ذخیره", CB_CMP_MEDIA_DONE)],
+        [Button.inline("❌ لغو", CB_CAMPAIGN)],
     ]
 
 

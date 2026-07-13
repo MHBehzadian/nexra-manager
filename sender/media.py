@@ -31,6 +31,9 @@ class MediaLibrary:
 
     def __init__(self) -> None:
         MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        # Buffers used while the admin forwards media to the bot.
+        self._buf_voices: list[str] = []
+        self._buf_images: list[str] = []
 
     # ------------------------------------------------------------------ #
     def load(self) -> dict:
@@ -50,6 +53,53 @@ class MediaLibrary:
     def is_ready(self) -> bool:
         media = self.load()
         return bool(media["voices"] or media["images"])
+
+    # ------------------------------------------------------------------ #
+    # Collection by forwarding media to the bot (private chat)
+    # ------------------------------------------------------------------ #
+    def begin_collection(self) -> None:
+        """Start a fresh media set: wipe old files and reset buffers."""
+        for path in MEDIA_DIR.glob("*"):
+            try:
+                path.unlink()
+            except OSError:
+                log.debug("Could not delete old media file {}", path)
+        self._buf_voices = []
+        self._buf_images = []
+
+    async def add_from_message(self, message) -> str | None:
+        """Download a forwarded voice/image from a message. Returns its kind."""
+        doc = getattr(message, "document", None)
+        mime = getattr(doc, "mime_type", "") or ""
+        if message.voice or message.audio or mime.startswith("audio/"):
+            path = MEDIA_DIR / f"voice_{len(self._buf_voices) + 1}.ogg"
+            await message.download_media(file=str(path))
+            self._buf_voices.append(str(path))
+            return "voice"
+        if message.photo or mime.startswith("image/"):
+            path = MEDIA_DIR / f"img_{len(self._buf_images) + 1}.jpg"
+            await message.download_media(file=str(path))
+            self._buf_images.append(str(path))
+            return "image"
+        return None
+
+    def commit_collection(self) -> dict:
+        """Write the manifest from the collected buffers."""
+        MANIFEST_PATH.write_text(
+            json.dumps(
+                {"voices": self._buf_voices, "images": self._buf_images},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        result = {"voices": len(self._buf_voices), "images": len(self._buf_images)}
+        log.info("Media committed via forward: {}", result)
+        return result
+
+    @property
+    def collected(self) -> dict:
+        return {"voices": len(self._buf_voices), "images": len(self._buf_images)}
 
     # ------------------------------------------------------------------ #
     async def refresh(self, coordinator) -> dict:
