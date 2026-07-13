@@ -48,12 +48,21 @@ log = get_logger(__name__)
 
 _ALBUM_CHUNK = 10  # Telegram allows up to 10 photos per grouped message.
 
-# Channel "Task" markers.
-MARK_GREETED = "✅"
-MARK_DONE = "✅✅"
+# Channel "Task" markers (the account name is appended by the caller).
+def _m_greeted(name: str) -> str:
+    return f"✅ سلام ارسال شد — اکانت {name}"
+
+
+def _m_done(name: str) -> str:
+    return f"✅✅ تکمیل شد — اکانت {name}"
+
+
+def _m_limited(name: str) -> str:
+    return f"⚠️ اکانت {name} محدود شد؛ انتقال به اکانت دیگر"
+
+
 ERR_NO_ACCOUNT = "❌ این شماره اکانت تلگرام ندارد"
-ERR_PRIVACY = "❌ امکان ارسال به این کاربر نیست"
-ERR_ACCOUNT_LIMITED = "❌ اکانت محدود شد؛ انتقال به اکانت دیگر"
+ERR_PRIVACY = "❌ کاربر اجازه‌ی پیام از غریبه را نداده؛ دیگر تلاش نمی‌شود"
 ERR_SEND = "❌ خطا در ارسال"
 
 # Exception class-name hints for classifying failures.
@@ -126,6 +135,10 @@ class SenderEngine:
         # account phone -> UTC time it is next allowed to send (normal per-account
         # rest of 40 min – 2 h between numbers, so one account isn't overused)
         self._next_ready: dict[str, datetime] = {}
+        # account phone -> number of in-flight tasks currently sending
+        self._in_flight: dict[str, int] = {}
+        # accounts removed permanently this run: [{"name", "reason"}]
+        self._removed: list[dict] = []
         # Numbers greeted-but-not-voiced that need finishing (voice only).
         # Filled once at startup and appended to on phase-2 account failures.
         # In-memory so in-flight numbers are never resumed by another account.
@@ -151,8 +164,31 @@ class SenderEngine:
             "running": self.is_running,
             "workers": self.active_workers,
             "in_flight": sum(1 for t in self._number_tasks if not t.done()),
+            "accounts": self.live_states(),
+            "removed": list(self._removed),
             "stats": {k: dict(v) for k, v in self.stats.items()},
         }
+
+    def live_states(self) -> list[dict]:
+        """Per-account live state for the report screen (with emoji + label)."""
+        now = _utcnow()
+        out: list[dict] = []
+        for acc in self._accounts:
+            p = acc.get("phone")
+            name = acc.get("session_name", p)
+            cd = self._cooldowns.get(p)
+            rest = self._next_ready.get(p)
+            if cd is not None and cd > now:
+                mins = int((cd - now).total_seconds() // 60)
+                out.append({"name": name, "emoji": "😴", "label": f"محدود (≈{mins} دقیقه دیگر)"})
+            elif self._in_flight.get(p, 0) > 0:
+                out.append({"name": name, "emoji": "📤", "label": "در حال ارسال"})
+            elif rest is not None and rest > now:
+                mins = int((rest - now).total_seconds() // 60)
+                out.append({"name": name, "emoji": "💤", "label": f"در استراحت (≈{mins} دقیقه دیگر)"})
+            else:
+                out.append({"name": name, "emoji": "⏳", "label": "در انتظار شماره"})
+        return out
 
     # ------------------------------------------------------------------ #
     async def start(self) -> dict:
@@ -179,6 +215,8 @@ class SenderEngine:
         self._rot = 0
         self._cooldowns.clear()
         self._next_ready.clear()
+        self._in_flight.clear()
+        self._removed.clear()
         self._exhausted_notified = False
         self._running = True
         self._dispatcher = asyncio.create_task(self._dispatcher_loop(), name="dispatcher")
@@ -330,39 +368,44 @@ class SenderEngine:
     # ------------------------------------------------------------------ #
     async def _process(self, account: dict, phone: str) -> None:
         acct_phone = account["phone"]
+        name = account.get("session_name", acct_phone)
         client = self._clients.get(acct_phone)
         if client is None:
             await self.db.release_pending(phone)
             return
 
-        # Phase 1 — resolve + greeting.
+        self._in_flight[acct_phone] = self._in_flight.get(acct_phone, 0) + 1
         try:
-            user = await self._resolve_user(client, phone)
-            if user is None:
-                await self.db.set_status(phone, NumberStatus.UNKNOWN)
-                await self.coord.mark_channel(phone, ERR_NO_ACCOUNT)
-                self._bump(acct_phone, "unknown")
+            # Phase 1 — resolve + greeting.
+            try:
+                user = await self._resolve_user(client, phone)
+                if user is None:
+                    await self.db.set_status(phone, NumberStatus.UNKNOWN)
+                    await self.coord.mark_channel(phone, ERR_NO_ACCOUNT)
+                    self._bump(acct_phone, "unknown")
+                    return
+                await self._wait_for_window()
+                await self._safe_send(client.send_message, user, content.random_greeting())
+                await self.db.mark_text_sent(phone)
+                await self.coord.mark_channel(phone, _m_greeted(name))
+                log.info("[{}] greeting sent to {}", name, phone)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self._handle_failure(account, phone, exc, phase=1)
                 return
-            await self._wait_for_window()
-            await self._safe_send(client.send_message, user, content.random_greeting())
-            await self.db.mark_text_sent(phone)
-            await self.coord.mark_channel(phone, MARK_GREETED)
-            log.info("[{}] greeting sent to {}", acct_phone, phone)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self._handle_failure(account, phone, exc, phase=1)
-            return
 
-        # Phase 2 — wait, then voice/images.
-        try:
-            await asyncio.sleep(content.random_delay(self.cfg.voice_delay()))
-            await self._send_voice(client, user)
-            await self._finish(acct_phone, phone, user, client)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self._handle_failure(account, phone, exc, phase=2)
+            # Phase 2 — wait, then voice/images.
+            try:
+                await asyncio.sleep(content.random_delay(self.cfg.voice_delay()))
+                await self._send_voice(client, user)
+                await self._finish(account, phone, user, client)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self._handle_failure(account, phone, exc, phase=2)
+        finally:
+            self._in_flight[acct_phone] = max(0, self._in_flight.get(acct_phone, 1) - 1)
 
     async def _resume_voice(self, account: dict, phone: str) -> None:
         acct_phone = account["phone"]
@@ -370,6 +413,7 @@ class SenderEngine:
         if client is None:
             await self.db.assign(phone, None)
             return
+        self._in_flight[acct_phone] = self._in_flight.get(acct_phone, 0) + 1
         try:
             user = await self._resolve_user(client, phone)
             if user is None:
@@ -378,18 +422,22 @@ class SenderEngine:
                 self._bump(acct_phone, "unknown")
                 return
             await self._send_voice(client, user)
-            await self._finish(acct_phone, phone, user, client)
+            await self._finish(account, phone, user, client)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             await self._handle_failure(account, phone, exc, phase=2)
+        finally:
+            self._in_flight[acct_phone] = max(0, self._in_flight.get(acct_phone, 1) - 1)
 
-    async def _finish(self, acct_phone: str, phone: str, user, client) -> None:
+    async def _finish(self, account: dict, phone: str, user, client) -> None:
+        acct_phone = account["phone"]
+        name = account.get("session_name", acct_phone)
         await self.db.mark_voice_sent(phone)
         await self.db.set_status(phone, NumberStatus.COMPLETED)
-        await self.coord.mark_channel(phone, MARK_DONE)
+        await self.coord.mark_channel(phone, _m_done(name))
         self._bump(acct_phone, "sent")
-        log.success("[{}] completed {}", acct_phone, phone)
+        log.success("[{}] completed {}", name, phone)
         await self._delete_contact(client, user)
 
     async def _send_voice(self, client, user) -> None:
@@ -409,12 +457,13 @@ class SenderEngine:
     # ------------------------------------------------------------------ #
     async def _handle_failure(self, account: dict, phone: str, exc: Exception, *, phase: int) -> None:
         acct_phone = account["phone"]
-        name = type(exc).__name__
+        acct_name = account.get("session_name", acct_phone)
+        err = type(exc).__name__
         kind = _classify(exc)
 
         if kind == "target":
-            # The *number/person* is the problem, not the account.
-            log.info("Target issue for {}: {}", phone, name)
+            # The *person* restricts who can message them → never retry (any acct).
+            log.info("Target issue for {}: {}", phone, err)
             await self.db.set_status(phone, NumberStatus.UNKNOWN)
             await self.coord.mark_channel(phone, ERR_PRIVACY)
             self._bump(acct_phone, "unknown")
@@ -422,7 +471,7 @@ class SenderEngine:
 
         if kind in ("cooldown", "dead"):
             # Account-side problem → hand this number to another account.
-            await self.coord.mark_channel(phone, ERR_ACCOUNT_LIMITED)
+            await self.coord.mark_channel(phone, _m_limited(acct_name))
             if phase == 1:
                 await self.db.release_pending(phone)      # not greeted → re-greet elsewhere
             else:
@@ -431,16 +480,16 @@ class SenderEngine:
 
             if kind == "cooldown":
                 # Temporary limit — rest the account, keep it in rotation.
-                await self._cooldown_account(account, name)
+                await self._cooldown_account(account, err)
             else:
                 # Terminal — remove the account for good.
-                await self._disable_account(account, name)
+                await self._disable_account(account, err)
             return
 
         # Unknown/transient error — record the reason, don't retry endlessly.
-        log.exception("Send failed for {} on account {}", phone, acct_phone)
+        log.exception("Send failed for {} on account {}", phone, acct_name)
         await self.db.set_status(phone, NumberStatus.UNKNOWN)
-        await self.coord.mark_channel(phone, f"{ERR_SEND}: {name}")
+        await self.coord.mark_channel(phone, f"{ERR_SEND} (اکانت {acct_name}): {err}")
         self._bump(acct_phone, "failed")
 
     async def _cooldown_account(self, account: dict, reason: str) -> None:
@@ -462,6 +511,7 @@ class SenderEngine:
         self._accounts = [a for a in self._accounts if a.get("phone") != phone]
         self._cooldowns.pop(phone, None)
         self._next_ready.pop(phone, None)
+        self._removed.append({"name": name, "reason": reason})
         client = self._clients.pop(phone, None)
         if client is not None:
             try:

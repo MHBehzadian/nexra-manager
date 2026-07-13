@@ -874,6 +874,36 @@ def register_handlers(
             )
             await event.edit(text, buttons=keyboards.numbers_back(), parse_mode="html")
 
+        elif data == keyboards.CB_NUM_RESET:
+            await event.answer()
+            if engine.is_running:
+                await event.edit(
+                    "⛔️ ابتدا کمپین را متوقف کن، بعد حافظه را پاک کن.",
+                    buttons=keyboards.numbers_back(),
+                    parse_mode="html",
+                )
+                return
+            total = await db.total_numbers()
+            await event.edit(
+                f"⚠️ <b>پاک‌کردن حافظه‌ی شماره‌ها</b>\n\n"
+                f"همه‌ی <b>{total}</b> شماره و نشانگرهای خواندن حذف می‌شوند.\n"
+                "<b>هشدار:</b> بعد از این، شماره‌هایی که قبلاً پیام گرفته‌اند ممکن است "
+                "دوباره پیام بگیرند (مگر اینکه پیامشان در کانال «Task» خورده باشد که رد می‌شود).\n\n"
+                "مطمئنی؟",
+                buttons=keyboards.confirm_reset(),
+                parse_mode="html",
+            )
+
+        elif data == keyboards.CB_NUM_RESET_OK:
+            await event.answer("در حال پاک‌کردن…")
+            removed = await db.reset_numbers()
+            await event.edit(
+                f"🗑 حافظه پاک شد. <b>{removed}</b> شماره حذف شد و خواندن از ابتدا شروع می‌شود.",
+                buttons=keyboards.numbers_back(),
+                parse_mode="html",
+            )
+            log.warning("Numbers memory reset by admin ({} removed).", removed)
+
         # -- campaign submenu --
         elif data == keyboards.CB_CAMPAIGN:
             await event.answer()
@@ -1010,21 +1040,39 @@ def register_handlers(
             await event.answer()
             st = engine.status()
             counts = await db.counts_by_status()
+            name_by_phone = {a.get("phone"): a.get("session_name") for a in await store.list()}
             lines = [
                 "📊 <b>وضعیت کمپین</b>\n",
                 f"وضعیت: <b>{'🟢 در حال اجرا' if st['running'] else '⛔️ متوقف'}</b>",
-                f"👷 workerهای فعال: <b>{st['workers']}</b>\n",
-                "<b>صف شماره‌ها:</b>",
+            ]
+
+            # Live per-account report.
+            if st["accounts"]:
+                lines.append("\n📡 <b>گزارش لحظه‌ای اکانت‌ها:</b>")
+                for a in st["accounts"]:
+                    lines.append(
+                        f"{a['emoji']} <b>{html.escape(str(a['name']))}</b> — {a['label']}"
+                    )
+            if st["removed"]:
+                lines.append("\n⛔️ <b>خارج‌شده (بن/غیرفعال):</b>")
+                for r in st["removed"]:
+                    lines.append(
+                        f"• <b>{html.escape(str(r['name']))}</b> ({html.escape(str(r['reason']))})"
+                    )
+
+            lines += [
+                "\n<b>صف شماره‌ها:</b>",
                 f"⏳ pending: <b>{counts.get('pending', 0)}</b>",
                 f"🔄 used: <b>{counts.get('used', 0)}</b>",
                 f"✅ completed: <b>{counts.get('completed', 0)}</b>",
                 f"❓ unknown: <b>{counts.get('unknown', 0)}</b>",
             ]
             if st["stats"]:
-                lines.append("\n<b>هر اکانت (این اجرا):</b>")
+                lines.append("\n<b>آمار این اجرا (هر اکانت):</b>")
                 for acc_phone, s in st["stats"].items():
+                    label = name_by_phone.get(acc_phone) or acc_phone
                     lines.append(
-                        f"• <code>{html.escape(acc_phone)}</code>: "
+                        f"• <b>{html.escape(str(label))}</b>: "
                         f"✅ {s['sent']} | ❓ {s['unknown']} | ⚠️ {s['failed']}"
                     )
             await event.edit(

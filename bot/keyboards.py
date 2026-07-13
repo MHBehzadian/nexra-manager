@@ -45,6 +45,8 @@ CB_CH_SET = b"num:setchannel"
 CB_CH_JOINALL = b"num:joinall"
 CB_NUM_READ = b"num:read"
 CB_NUM_STATS = b"num:stats"
+CB_NUM_RESET = b"num:reset"
+CB_NUM_RESET_OK = b"num:resetok"
 
 # Prefixes for per-account actions (name appended)
 P_ACC_VIEW = "acc:view:"
@@ -130,7 +132,18 @@ def numbers_menu(has_channel: bool) -> list[list[Button]]:
             Button.inline("📥 خواندن شماره‌ها", CB_NUM_READ),
             Button.inline("📊 آمار", CB_NUM_STATS),
         ],
+        [Button.inline("🗑 پاک‌کردن حافظه‌ی شماره‌ها", CB_NUM_RESET)],
         [Button.inline("⬅️ بازگشت به منو", CB_HOME)],
+    ]
+
+
+def confirm_reset() -> list[list[Button]]:
+    """Yes/No confirmation for wiping the numbers memory."""
+    return [
+        [
+            Button.inline("✅ بله، پاک کن", CB_NUM_RESET_OK),
+            Button.inline("❌ انصراف", CB_NUMBERS),
+        ]
     ]
 
 

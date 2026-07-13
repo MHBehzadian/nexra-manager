@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -123,6 +123,18 @@ class Database:
             for status, count in rows.all():
                 counts[status] = count
         return counts
+
+    async def reset_numbers(self) -> int:
+        """Wipe ALL numbers and read cursors. Returns how many numbers were removed."""
+        async with self._session() as session:
+            count = int(
+                (await session.execute(select(func.count()).select_from(Number))).scalar_one()
+            )
+            await session.execute(delete(Number))
+            await session.execute(delete(ReadCursor))
+            await session.commit()
+        log.warning("Numbers memory reset — removed {} number(s) and all cursors.", count)
+        return count
 
     async def total_numbers(self) -> int:
         async with self._session() as session:
