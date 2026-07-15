@@ -437,39 +437,62 @@ class AccountCoordinator:
         return False, last
 
     async def test_edit(self) -> tuple[bool, str]:
-        """Non-destructively test editing a real number post; return (ok, reason)."""
+        """Detailed, non-destructive edit test: checks the message exists, then edits."""
         if not self.channel_id:
             return False, "کانال تنظیم نشده."
-        rows = await self.db.list_numbers(limit=1)
+        rows = [r for r in await self.db.list_numbers(limit=10) if r.get("source_message_id")]
         if not rows:
-            return False, "هیچ شماره‌ای در حافظه نیست؛ اول «📥 خواندن شماره‌ها» را بزن."
-        row = rows[0]
-        mid = row.get("source_message_id")
-        original = row.get("source_text") or row.get("phone")
-        if not mid:
             return False, (
-                "شماره بدون «شناسه‌ی پیام کانال» ذخیره شده (نسخه‌ی قدیمی).\n"
+                "هیچ شماره‌ای با «شناسه‌ی پیام کانال» نیست.\n"
                 "«🗑 پاک‌کردن حافظه» و بعد «📥 خواندن شماره‌ها» را بزن."
             )
-        last = None
-        for sess in await self._editor_sessions(None):
+        sessions = await self._editor_sessions(None)
+        if not sessions:
+            return False, "اکانت فعالی موجود نیست."
+
+        report: list[str] = []
+        for sess in sessions:
             try:
                 async with self.account_client(sess) as client:
                     if not await client.is_user_authorized():
+                        report.append(f"• {sess}: اکانت غیرفعال")
                         continue
                     entity = await client.get_entity(_channel_ref(self.channel_id))
-                    await client.edit_message(entity, mid, f"{original}\n\n(تست ادیت nexra manager)")
-                    await client.edit_message(entity, mid, original)  # restore
-                    self._editor_session = sess
-                    return True, f"با اکانت «{sess}» انجام شد — این اکانت ادمین کانال با دسترسی Edit است."
+                    found_any = False
+                    for row in rows:
+                        mid = row["source_message_id"]
+                        try:
+                            msg = await client.get_messages(entity, ids=mid)
+                        except Exception as exc:
+                            report.append(f"• {sess}: واکشی پیام خطا داد ({type(exc).__name__})")
+                            break
+                        if msg is None:
+                            continue  # this message gone → try the next number
+                        found_any = True
+                        cur = msg.message or (row.get("source_text") or row.get("phone"))
+                        try:
+                            await client.edit_message(entity, mid, cur + "\n\n(تست ادیت)")
+                            await client.edit_message(entity, mid, cur)  # restore
+                            self._editor_session = sess
+                            preview = (msg.message or "")[:40].replace("\n", " ")
+                            return True, (
+                                f"با اکانت «{sess}» روی پیام id={mid} انجام شد ✅\n"
+                                f"متن پیام: «{preview}…»"
+                            )
+                        except Exception as exc:
+                            report.append(
+                                f"• {sess}: پیام id={mid} وجود دارد ولی ادیت نشد "
+                                f"→ <code>{type(exc).__name__}</code> (یعنی این اکانت ادمین با Edit نیست)"
+                            )
+                            break
+                    if not found_any:
+                        report.append(
+                            f"• {sess}: هیچ‌کدام از {len(rows)} پیام اخیر در کانال پیدا نشد "
+                            "(شناسه‌ها اشتباه‌اند یا این اکانت عضو این کانال نیست)."
+                        )
             except Exception as exc:
-                last = type(exc).__name__
-                continue
-        return False, (
-            f"هیچ‌کدام از اکانت‌ها نتوانستند ادیت کنند (آخرین خطا: {last}).\n"
-            "یک اکانت را ادمین کانال با دسترسی «Edit Messages» کن.\n"
-            "توجه: بات نمی‌تواند پیامِ دیگران را ادیت کند — فقط اکانت کاربریِ ادمین می‌تواند."
-        )
+                report.append(f"• {sess}: خطا ({type(exc).__name__})")
+        return False, "نتیجه‌ی تشخیص:\n" + "\n".join(report)
 
     async def mark_channel(self, phone: str, marker: str, prefer_session: str | None = None) -> bool:
         """Edit the source channel post to show this number's task status.
