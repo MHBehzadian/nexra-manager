@@ -469,6 +469,12 @@ class AccountCoordinator:
                         if msg is None:
                             continue  # this message gone → try the next number
                         found_any = True
+                        is_fwd = getattr(msg, "fwd_from", None) is not None
+                        has_media = getattr(msg, "media", None) is not None
+                        props = (
+                            f"فوروارد={'بله' if is_fwd else 'خیر'}، "
+                            f"مدیا={'بله' if has_media else 'خیر'}"
+                        )
                         cur = msg.message or (row.get("source_text") or row.get("phone"))
                         try:
                             await client.edit_message(entity, mid, cur + "\n\n(تست ادیت)")
@@ -477,12 +483,24 @@ class AccountCoordinator:
                             preview = (msg.message or "")[:40].replace("\n", " ")
                             return True, (
                                 f"با اکانت «{sess}» روی پیام id={mid} انجام شد ✅\n"
-                                f"متن پیام: «{preview}…»"
+                                f"متن: «{preview}…» ({props})"
                             )
                         except Exception as exc:
+                            hint = ""
+                            if is_fwd:
+                                hint = (
+                                    "\n⛔️ این پیام «فوروارد‌شده» است و اصلاً قابل ویرایش نیست "
+                                    "(نه با ادمین، نه با صاحب کانال). باید شماره‌ها بدون فوروارد "
+                                    "و به‌صورت پیام معمولی در کانال باشند."
+                                )
+                            else:
+                                hint = (
+                                    "\nℹ️ پیام معمولی است؛ پس مشکل «دسترسی» است: تیک اختصاصی "
+                                    "«Edit Messages» را در ادمینِ این اکانت روشن کن."
+                                )
                             report.append(
-                                f"• {sess}: پیام id={mid} وجود دارد ولی ادیت نشد "
-                                f"→ <code>{type(exc).__name__}</code> (یعنی این اکانت ادمین با Edit نیست)"
+                                f"• {sess}: پیام id={mid} هست ({props}) ولی ادیت نشد "
+                                f"→ <code>{type(exc).__name__}</code>{hint}"
                             )
                             break
                     if not found_any:
