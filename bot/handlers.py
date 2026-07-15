@@ -1157,6 +1157,13 @@ def register_handlers(
             return
         title = getattr(chat, "title", None) or "کانال"
 
+        # Remember the bot's access hash for this channel so it can edit posts
+        # later (private channels can't be resolved by a bot from a bare id).
+        if str(getattr(chat, "id", "")) and coordinator.channel_id:
+            saved = coordinator.save_bot_channel(chat)
+            if saved:
+                log.info("Cached bot channel access from forwarded message.")
+
         # 1) Post test.
         base = "🤖 ربات call center فعال می‌باشد ✅"
         try:

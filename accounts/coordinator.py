@@ -17,19 +17,27 @@ from __future__ import annotations
 
 import contextlib
 import html
+import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from telethon import TelegramClient
 from telethon.errors import UserAlreadyParticipantError
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.types import InputPeerChannel
 
 from config import Settings, persist_channel_id, persist_report_channel_id
 from utils import get_logger
 
 from . import manager
 from .store import AccountStore
+
+# Persisted access to the numbers channel for the BOT (private channels can't be
+# resolved by a bot from a bare id — BotMethodInvalidError — so we cache the
+# access hash the bot learns from a forwarded message).
+_BOT_CH_PATH = Path(__file__).resolve().parent.parent / "data" / "bot_channel.json"
 
 log = get_logger(__name__)
 
@@ -95,6 +103,9 @@ class AccountCoordinator:
         self.bot_client = None
         # Distinct channel-edit problems already reported (notify once per reason).
         self._edit_notified: set[str] = set()
+        # Cached InputPeerChannel the bot can use to edit posts (see _BOT_CH_PATH).
+        self._bot_channel_input: InputPeerChannel | None = None
+        self._load_bot_channel()
 
     # ------------------------------------------------------------------ #
     # Channel configuration
@@ -103,8 +114,68 @@ class AccountCoordinator:
         """Persist a new channel id to .env and update the in-memory value."""
         norm = persist_channel_id(value)
         self.channel_id = norm
+        # A new channel invalidates the cached bot access hash.
+        self._bot_channel_input = None
+        with contextlib.suppress(OSError):
+            _BOT_CH_PATH.unlink(missing_ok=True)
         log.info("Coordinator channel set to {}", norm)
         return norm
+
+    # ---- bot channel access (for editing private-channel posts) --------- #
+    def _load_bot_channel(self) -> None:
+        try:
+            if _BOT_CH_PATH.exists():
+                data = json.loads(_BOT_CH_PATH.read_text(encoding="utf-8"))
+                if data.get("channel_id") == self.channel_id:
+                    self._bot_channel_input = InputPeerChannel(
+                        int(data["id"]), int(data["access_hash"])
+                    )
+                    log.info("Loaded cached bot channel access.")
+        except Exception:
+            log.exception("Could not load cached bot channel access")
+
+    def _configured_numeric_id(self) -> int | None:
+        """The numbers channel's raw numeric id, if it was set as a numeric id."""
+        cid = (self.channel_id or "").strip()
+        if cid.startswith("-100") and cid[1:].isdigit():
+            return int(cid[4:])  # strip the -100 bot-api prefix
+        if cid.lstrip("-").isdigit():
+            return int(cid.lstrip("-"))
+        return None
+
+    def save_bot_channel(self, entity) -> bool:
+        """Remember the bot's access hash for the channel (from a forwarded msg)."""
+        peer_id = getattr(entity, "id", None)
+        access_hash = getattr(entity, "access_hash", None)
+        if peer_id is None or access_hash is None:
+            return False
+        # Only cache access for the actual numbers channel (not e.g. the report one).
+        want = self._configured_numeric_id()
+        if want is not None and int(peer_id) != want:
+            log.info("Forwarded channel {} isn't the numbers channel {}; not caching.", peer_id, want)
+            return False
+        self._bot_channel_input = InputPeerChannel(int(peer_id), int(access_hash))
+        try:
+            _BOT_CH_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _BOT_CH_PATH.write_text(
+                json.dumps(
+                    {"channel_id": self.channel_id, "id": int(peer_id), "access_hash": int(access_hash)}
+                ),
+                encoding="utf-8",
+            )
+            log.info("Saved bot channel access for editing.")
+            return True
+        except OSError:
+            log.exception("Could not persist bot channel access")
+            return False
+
+    async def get_bot_channel(self):
+        """Resolve the channel for the BOT — prefer the cached access hash."""
+        if self._bot_channel_input is not None:
+            return self._bot_channel_input
+        # Fallback: works for public @username channels or if already cached in
+        # the bot session; raises for private channels (BotMethodInvalidError).
+        return await self.get_channel_entity(self.bot_client)
 
     def set_report_channel(self, value: str | None) -> str | None:
         """Persist a new report channel to .env and update the in-memory value."""
@@ -344,9 +415,12 @@ class AccountCoordinator:
                 "«🗑 پاک‌کردن حافظه» و بعد «📥 خواندن شماره‌ها» را بزن."
             )
         try:
-            entity = await self.get_channel_entity(self.bot_client)
+            entity = await self.get_bot_channel()
         except Exception as exc:
-            return False, f"resolve کانال ناموفق: {type(exc).__name__}"
+            return False, (
+                f"resolve کانال ناموفق: {type(exc).__name__}\n"
+                "کانال خصوصی است — یک پیام از کانال را برای بات فوروارد کن، بعد دوباره تست بزن."
+            )
         try:
             await self.bot_client.edit_message(entity, mid, f"{original}\n\n(تست ادیت nexra manager)")
             await self.bot_client.edit_message(entity, mid, original)  # restore
@@ -384,13 +458,13 @@ class AccountCoordinator:
         new_text = f"{base}\n\n{TASK_MARKER} {marker}".strip()
 
         try:
-            entity = await self.get_channel_entity(self.bot_client)
+            entity = await self.get_bot_channel()
         except Exception as exc:
             await self._edit_diag(
                 f"resolve:{type(exc).__name__}",
                 f"بات نتوانست کانال را پیدا کند (resolve): <code>{type(exc).__name__}</code>.\n"
-                "یک پیام از کانال برای بات فوروارد کن (تا شناسه‌اش را یاد بگیرد)، "
-                "یا کانال را با <code>@username</code> تنظیم کن.",
+                "کانال خصوصی است؛ کافی است یک پیام از کانال را برای بات <b>فوروارد</b> کنی "
+                "(تا access_hash را یاد بگیرد و ذخیره شود). سپس دوباره امتحان کن.",
             )
             return False
 
