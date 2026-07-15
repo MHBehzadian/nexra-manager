@@ -103,6 +103,8 @@ class AccountCoordinator:
         self.bot_client = None
         # Distinct channel-edit problems already reported (notify once per reason).
         self._edit_notified: set[str] = set()
+        # Cached session name of a user account that can edit channel posts.
+        self._editor_session: str | None = None
         # Cached InputPeerChannel the bot can use to edit posts (see _BOT_CH_PATH).
         self._bot_channel_input: InputPeerChannel | None = None
         self._load_bot_channel()
@@ -397,10 +399,45 @@ class AccountCoordinator:
         except Exception:
             log.exception("Failed to DM admin the edit diagnostic")
 
+    async def _editor_sessions(self, prefer: str | None) -> list[str]:
+        """Active account session names to try for editing, best candidate first."""
+        active = [a["session_name"] for a in await self.store.list() if a.get("status") == "active"]
+        if self._editor_session and self._editor_session in active:
+            return [self._editor_session]
+        ordered: list[str] = []
+        if prefer and prefer in active:
+            ordered.append(prefer)
+        for s in active:
+            if s not in ordered:
+                ordered.append(s)
+        return ordered
+
+    async def _edit_post(
+        self, message_id: int, new_text: str, prefer: str | None
+    ) -> tuple[bool, str | None]:
+        """Edit a channel post using a USER account (bots can't edit others' posts).
+
+        Tries accounts until one succeeds (that one is a channel admin with edit
+        rights), caches it, and returns (ok, last_error_name).
+        """
+        last: str | None = None
+        for sess in await self._editor_sessions(prefer):
+            try:
+                async with self.account_client(sess) as client:
+                    if not await client.is_user_authorized():
+                        continue
+                    entity = await client.get_entity(_channel_ref(self.channel_id))
+                    await client.edit_message(entity, message_id, new_text)
+                    self._editor_session = sess
+                    return True, None
+            except Exception as exc:
+                last = type(exc).__name__
+                # This account can't edit (not admin / no rights) → try the next.
+                continue
+        return False, last
+
     async def test_edit(self) -> tuple[bool, str]:
         """Non-destructively test editing a real number post; return (ok, reason)."""
-        if self.bot_client is None:
-            return False, "کلاینت بات آماده نیست (کمپین را استارت کن)."
         if not self.channel_id:
             return False, "کانال تنظیم نشده."
         rows = await self.db.list_numbers(limit=1)
@@ -414,37 +451,35 @@ class AccountCoordinator:
                 "شماره بدون «شناسه‌ی پیام کانال» ذخیره شده (نسخه‌ی قدیمی).\n"
                 "«🗑 پاک‌کردن حافظه» و بعد «📥 خواندن شماره‌ها» را بزن."
             )
-        try:
-            entity = await self.get_bot_channel()
-        except Exception as exc:
-            return False, (
-                f"resolve کانال ناموفق: {type(exc).__name__}\n"
-                "کانال خصوصی است — یک پیام از کانال را برای بات فوروارد کن، بعد دوباره تست بزن."
-            )
-        try:
-            await self.bot_client.edit_message(entity, mid, f"{original}\n\n(تست ادیت nexra manager)")
-            await self.bot_client.edit_message(entity, mid, original)  # restore
-            return True, "ادیت با موفقیت انجام و به حالت اول بازگردانده شد."
-        except Exception as exc:
-            return False, f"{type(exc).__name__} — {exc}"
+        last = None
+        for sess in await self._editor_sessions(None):
+            try:
+                async with self.account_client(sess) as client:
+                    if not await client.is_user_authorized():
+                        continue
+                    entity = await client.get_entity(_channel_ref(self.channel_id))
+                    await client.edit_message(entity, mid, f"{original}\n\n(تست ادیت nexra manager)")
+                    await client.edit_message(entity, mid, original)  # restore
+                    self._editor_session = sess
+                    return True, f"با اکانت «{sess}» انجام شد — این اکانت ادمین کانال با دسترسی Edit است."
+            except Exception as exc:
+                last = type(exc).__name__
+                continue
+        return False, (
+            f"هیچ‌کدام از اکانت‌ها نتوانستند ادیت کنند (آخرین خطا: {last}).\n"
+            "یک اکانت را ادمین کانال با دسترسی «Edit Messages» کن.\n"
+            "توجه: بات نمی‌تواند پیامِ دیگران را ادیت کند — فقط اکانت کاربریِ ادمین می‌تواند."
+        )
 
-    async def mark_channel(self, phone: str, marker: str) -> bool:
-        """Edit the source channel message to show this number's task status.
+    async def mark_channel(self, phone: str, marker: str, prefer_session: str | None = None) -> bool:
+        """Edit the source channel post to show this number's task status.
 
-        Best-effort: the DB is the source of truth, so sending is unaffected if
-        this fails — but every distinct failure reason is reported to the admin
-        once, so the cause (permission / resolve / missing source id) is obvious.
+        Done with a USER account (bots can't edit others' posts). Best-effort: the
+        DB is the source of truth, so sending is unaffected if this fails — but the
+        cause is reported to the admin once.
         """
-        if self.bot_client is None:
-            await self._edit_diag(
-                "bot_client_none",
-                "کلاینت بات آماده نیست. کمپین را از منوی «🚀 کمپین» دوباره استارت کن.",
-            )
-            return False
         if not self.channel_id:
-            await self._edit_diag("no_channel", "کانال شماره‌ها تنظیم نشده است.")
             return False
-
         message_id, source_text = await self.db.get_source(phone)
         if not message_id:
             await self._edit_diag(
@@ -457,25 +492,14 @@ class AccountCoordinator:
         base = (source_text or phone).split(f"\n\n{TASK_MARKER}")[0].rstrip()
         new_text = f"{base}\n\n{TASK_MARKER} {marker}".strip()
 
-        try:
-            entity = await self.get_bot_channel()
-        except Exception as exc:
-            await self._edit_diag(
-                f"resolve:{type(exc).__name__}",
-                f"بات نتوانست کانال را پیدا کند (resolve): <code>{type(exc).__name__}</code>.\n"
-                "کانال خصوصی است؛ کافی است یک پیام از کانال را برای بات <b>فوروارد</b> کنی "
-                "(تا access_hash را یاد بگیرد و ذخیره شود). سپس دوباره امتحان کن.",
-            )
-            return False
-
-        try:
-            await self.bot_client.edit_message(entity, message_id, new_text)
-            self._edit_notified.clear()  # working again → allow future re-reporting
+        ok, err = await self._edit_post(message_id, new_text, prefer_session)
+        if ok:
+            self._edit_notified.clear()
             return True
-        except Exception as exc:
-            await self._edit_diag(
-                f"edit:{type(exc).__name__}",
-                f"ادیت ناموفق: <code>{type(exc).__name__}</code> — {html.escape(str(exc))}\n"
-                "تیک «Edit Messages» را در دسترسی ادمینِ بات در کانال روشن کن.",
-            )
-            return False
+        await self._edit_diag(
+            f"edit:{err}",
+            f"ادیت پیام کانال ناموفق بود (آخرین خطا: <code>{html.escape(str(err))}</code>).\n"
+            "باید یکی از اکانت‌های تو <b>ادمین کانال با دسترسی Edit Messages</b> باشد "
+            "(بات نمی‌تواند پیامِ دیگران را ادیت کند).",
+        )
+        return False
