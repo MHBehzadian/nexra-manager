@@ -874,6 +874,19 @@ def register_handlers(
             )
             await event.edit(text, buttons=keyboards.numbers_back(), parse_mode="html")
 
+        elif data == keyboards.CB_NUM_EDITTEST:
+            await event.answer("در حال تست ادیت…")
+            coordinator.bot_client = client  # ensure it's set even before campaign start
+            ok, reason = await coordinator.test_edit()
+            if ok:
+                text = f"✅ <b>ادیت کانال کار می‌کند!</b>\n{html.escape(reason)}"
+            else:
+                text = (
+                    "⛔️ <b>ادیت کانال کار نکرد</b>\n\n"
+                    f"علت: {html.escape(reason)}"
+                )
+            await event.edit(text, buttons=keyboards.numbers_back(), parse_mode="html")
+
         elif data == keyboards.CB_NUM_RESET:
             await event.answer()
             if engine.is_running:

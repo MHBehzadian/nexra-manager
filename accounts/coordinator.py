@@ -93,8 +93,8 @@ class AccountCoordinator:
         # edit channel messages (members can't edit channel posts; the bot,
         # as a channel admin, can) and to DM/post reports.
         self.bot_client = None
-        # So we surface the exact channel-edit error to the admin only once.
-        self._edit_error_notified = False
+        # Distinct channel-edit problems already reported (notify once per reason).
+        self._edit_notified: set[str] = set()
 
     # ------------------------------------------------------------------ #
     # Channel configuration
@@ -309,36 +309,99 @@ class AccountCoordinator:
     # ------------------------------------------------------------------ #
     # Channel message marking ("Task" + progress ticks / error reason)
     # ------------------------------------------------------------------ #
+    async def _edit_diag(self, key: str, message: str) -> None:
+        """DM the admin about a channel-edit problem, once per distinct reason."""
+        log.warning("channel-edit issue [{}]: {}", key, message)
+        if key in self._edit_notified:
+            return
+        self._edit_notified.add(key)
+        if self.bot_client is None:
+            return
+        try:
+            await self.bot_client.send_message(
+                self.settings.admin_id,
+                f"⚠️ <b>ادیت پیام کانال انجام نشد</b>\n\n{message}",
+                parse_mode="html",
+            )
+        except Exception:
+            log.exception("Failed to DM admin the edit diagnostic")
+
+    async def test_edit(self) -> tuple[bool, str]:
+        """Non-destructively test editing a real number post; return (ok, reason)."""
+        if self.bot_client is None:
+            return False, "کلاینت بات آماده نیست (کمپین را استارت کن)."
+        if not self.channel_id:
+            return False, "کانال تنظیم نشده."
+        rows = await self.db.list_numbers(limit=1)
+        if not rows:
+            return False, "هیچ شماره‌ای در حافظه نیست؛ اول «📥 خواندن شماره‌ها» را بزن."
+        row = rows[0]
+        mid = row.get("source_message_id")
+        original = row.get("source_text") or row.get("phone")
+        if not mid:
+            return False, (
+                "شماره بدون «شناسه‌ی پیام کانال» ذخیره شده (نسخه‌ی قدیمی).\n"
+                "«🗑 پاک‌کردن حافظه» و بعد «📥 خواندن شماره‌ها» را بزن."
+            )
+        try:
+            entity = await self.get_channel_entity(self.bot_client)
+        except Exception as exc:
+            return False, f"resolve کانال ناموفق: {type(exc).__name__}"
+        try:
+            await self.bot_client.edit_message(entity, mid, f"{original}\n\n(تست ادیت nexra manager)")
+            await self.bot_client.edit_message(entity, mid, original)  # restore
+            return True, "ادیت با موفقیت انجام و به حالت اول بازگردانده شد."
+        except Exception as exc:
+            return False, f"{type(exc).__name__} — {exc}"
+
     async def mark_channel(self, phone: str, marker: str) -> bool:
         """Edit the source channel message to show this number's task status.
 
-        ``marker`` examples: ``"✅"`` (greeting sent), ``"✅✅"`` (voice sent),
-        ``"❌ <reason>"`` (failed). Best-effort: if the bot isn't a channel admin
-        (or anything else goes wrong) it logs and returns False — the DB remains
-        the source of truth, so sending is unaffected.
+        Best-effort: the DB is the source of truth, so sending is unaffected if
+        this fails — but every distinct failure reason is reported to the admin
+        once, so the cause (permission / resolve / missing source id) is obvious.
         """
-        if self.bot_client is None or not self.channel_id:
+        if self.bot_client is None:
+            await self._edit_diag(
+                "bot_client_none",
+                "کلاینت بات آماده نیست. کمپین را از منوی «🚀 کمپین» دوباره استارت کن.",
+            )
             return False
+        if not self.channel_id:
+            await self._edit_diag("no_channel", "کانال شماره‌ها تنظیم نشده است.")
+            return False
+
         message_id, source_text = await self.db.get_source(phone)
         if not message_id:
+            await self._edit_diag(
+                "no_source",
+                "شماره‌ها بدون «شناسه‌ی پیام کانال» ذخیره شده‌اند (با نسخه‌ی قدیمی خوانده شده‌اند).\n"
+                "راه‌حل: 📇 شماره‌ها → «🗑 پاک‌کردن حافظه‌ی شماره‌ها»، سپس «📥 خواندن شماره‌ها».",
+            )
             return False
+
         base = (source_text or phone).split(f"\n\n{TASK_MARKER}")[0].rstrip()
         new_text = f"{base}\n\n{TASK_MARKER} {marker}".strip()
+
         try:
             entity = await self.get_channel_entity(self.bot_client)
+        except Exception as exc:
+            await self._edit_diag(
+                f"resolve:{type(exc).__name__}",
+                f"بات نتوانست کانال را پیدا کند (resolve): <code>{type(exc).__name__}</code>.\n"
+                "یک پیام از کانال برای بات فوروارد کن (تا شناسه‌اش را یاد بگیرد)، "
+                "یا کانال را با <code>@username</code> تنظیم کن.",
+            )
+            return False
+
+        try:
             await self.bot_client.edit_message(entity, message_id, new_text)
-            self._edit_error_notified = False
+            self._edit_notified.clear()  # working again → allow future re-reporting
             return True
         except Exception as exc:
-            log.warning("Could not edit channel message {} for {}: {}", message_id, phone, exc)
-            # Surface the exact reason to the admin/report channel once, so a
-            # missing "Edit Messages" permission is obvious.
-            if not self._edit_error_notified:
-                self._edit_error_notified = True
-                await self.notify(
-                    "⚠️ <b>ادیت پیام کانال ناموفق بود</b>\n"
-                    f"خطا: <code>{type(exc).__name__}</code>\n"
-                    f"جزئیات: {html.escape(str(exc))}\n\n"
-                    "معمولاً یعنی بات در کانال شماره‌ها دسترسی «Edit Messages» ندارد."
-                )
+            await self._edit_diag(
+                f"edit:{type(exc).__name__}",
+                f"ادیت ناموفق: <code>{type(exc).__name__}</code> — {html.escape(str(exc))}\n"
+                "تیک «Edit Messages» را در دسترسی ادمینِ بات در کانال روشن کن.",
+            )
             return False

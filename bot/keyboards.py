@@ -47,6 +47,7 @@ CB_NUM_READ = b"num:read"
 CB_NUM_STATS = b"num:stats"
 CB_NUM_RESET = b"num:reset"
 CB_NUM_RESET_OK = b"num:resetok"
+CB_NUM_EDITTEST = b"num:edittest"
 
 # Prefixes for per-account actions (name appended)
 P_ACC_VIEW = "acc:view:"
@@ -132,6 +133,7 @@ def numbers_menu(has_channel: bool) -> list[list[Button]]:
             Button.inline("📥 خواندن شماره‌ها", CB_NUM_READ),
             Button.inline("📊 آمار", CB_NUM_STATS),
         ],
+        [Button.inline("🧪 تست ادیت کانال", CB_NUM_EDITTEST)],
         [Button.inline("🗑 پاک‌کردن حافظه‌ی شماره‌ها", CB_NUM_RESET)],
         [Button.inline("⬅️ بازگشت به منو", CB_HOME)],
     ]
