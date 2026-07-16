@@ -28,6 +28,7 @@ resumed at the voice step if it was).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -230,21 +231,42 @@ class SenderEngine:
         log.success("Sender engine started with {} account(s).", len(self._accounts))
         return {"started": len(self._accounts), "error": None}
 
-    async def stop(self) -> None:
+    async def stop(self, graceful: bool = True, grace_timeout: float = 30.0) -> None:
+        """Stop the campaign.
+
+        The dispatcher stops claiming new numbers immediately. In-flight numbers:
+        with ``graceful`` we wait up to ``grace_timeout`` so a send in progress
+        can finish its current item; whatever isn't done by then is cancelled.
+        Either way, thanks to per-item progress (``items_sent``), the next start
+        resumes each half-done number from the exact next item — never re-sending
+        or skipping. (Numbers stuck in the long greeting→voice wait are cancelled
+        and simply resume later.)
+        """
         if self._dispatcher is None and not self._number_tasks:
             self._running = False
             return
-        log.info("Stopping sender engine…")
+        log.info("Stopping sender engine (graceful={})…", graceful)
+        self._running = False
         if self._dispatcher is not None:
             self._dispatcher.cancel()
-        for task in list(self._number_tasks):
-            task.cancel()
-        pending = [t for t in [self._dispatcher, *self._number_tasks] if t is not None]
-        await asyncio.gather(*pending, return_exceptions=True)
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._dispatcher
+            self._dispatcher = None
+
+        tasks = list(self._number_tasks)
+        if tasks:
+            if graceful:
+                _, pending = await asyncio.wait(tasks, timeout=grace_timeout)
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+            else:
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
         self._number_tasks.clear()
-        self._dispatcher = None
         await self._disconnect_all()
-        self._running = False
         log.info("Sender engine stopped.")
 
     # ------------------------------------------------------------------ #
@@ -406,7 +428,7 @@ class SenderEngine:
             # Phase 2 — wait, then voice/images.
             try:
                 await asyncio.sleep(content.random_delay(self.cfg.voice_delay()))
-                await self._send_voice(client, user)
+                await self._send_voice(client, user, phone)
                 await self._finish(account, phone, user, client)
             except asyncio.CancelledError:
                 raise
@@ -427,7 +449,7 @@ class SenderEngine:
             if user is None:
                 await self._on_no_user(account, phone)
                 return
-            await self._send_voice(client, user)
+            await self._send_voice(client, user, phone)
             await self._finish(account, phone, user, client)
         except asyncio.CancelledError:
             raise
@@ -512,10 +534,17 @@ class SenderEngine:
                 "«فوروارد‌شده» نباشند.",
             )
 
-    async def _send_voice(self, client, user) -> None:
-        """Send the forwarded media items in the exact order they were added."""
-        await self._wait_for_window()
-        for item in self.media.load():
+    async def _send_voice(self, client, user, phone: str) -> None:
+        """Send the forwarded media items in order, with a random 30 s–2 min gap
+        between each one. Resumes from the last delivered item (items_sent), so a
+        stop/restart never re-sends or skips an item."""
+        items = self.media.load()
+        start = await self.db.get_items_sent(phone)
+        for i in range(start, len(items)):
+            if i > start:
+                await asyncio.sleep(content.random_delay(content.BETWEEN_ITEMS))
+            await self._wait_for_window()
+            item = items[i]
             kind = item["type"]
             if kind == "voice":
                 await self._safe_send(client.send_file, user, item["path"], voice_note=True)
@@ -523,6 +552,8 @@ class SenderEngine:
                 await self._safe_send(client.send_file, user, item["path"])
             elif kind == "text":
                 await self._safe_send(client.send_message, user, item["text"])
+            # Persist progress only AFTER the item is actually delivered.
+            await self.db.set_items_sent(phone, i + 1)
 
     # ------------------------------------------------------------------ #
     # Failure handling

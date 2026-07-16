@@ -49,6 +49,7 @@ class Database:
             # Add columns introduced after a DB may already exist.
             for ddl in (
                 "ALTER TABLE numbers ADD COLUMN source_text VARCHAR(512)",
+                "ALTER TABLE numbers ADD COLUMN items_sent INTEGER DEFAULT 0",
             ):
                 try:
                     await conn.exec_driver_sql(ddl)
@@ -179,6 +180,21 @@ class Database:
             )
             await session.commit()
             return bool(result.rowcount)
+
+    async def get_items_sent(self, phone: str) -> int:
+        async with self._session() as session:
+            result = await session.execute(
+                select(Number.items_sent).where(Number.phone == phone)
+            )
+            row = result.first()
+            return int(row[0]) if row and row[0] is not None else 0
+
+    async def set_items_sent(self, phone: str, count: int) -> None:
+        async with self._session() as session:
+            await session.execute(
+                update(Number).where(Number.phone == phone).values(items_sent=count)
+            )
+            await session.commit()
 
     async def mark_voice_sent(self, phone: str) -> bool:
         async with self._session() as session:

@@ -124,7 +124,9 @@ class BotApp:
         except Exception:
             log.exception("Error stopping the reporter")
         try:
-            await self.engine.stop()
+            # Fast shutdown on process exit; per-item progress means half-done
+            # numbers resume exactly where they left off on the next start.
+            await self.engine.stop(graceful=False)
         except Exception:
             log.exception("Error stopping the sender engine")
         if self.client.is_connected():

@@ -32,6 +32,9 @@ def random_greeting() -> str:
 # NOTE: this is the DEFAULT; it can be overridden at runtime from the bot
 # (see sender/campaign_config.py).
 GREETING_TO_VOICE: tuple[int, int] = (15 * 60, 2 * 60 * 60)  # 15 min – 2 h
+# Gap between each individual item (voice/image/text) sent to one customer in
+# phase 2, so they don't all arrive at once.
+BETWEEN_ITEMS: tuple[int, int] = (30, 2 * 60)  # 30 s – 2 min
 # Gap between finishing one number and starting the next, per account.
 BETWEEN_NUMBERS: tuple[int, int] = (40 * 60, 2 * 60 * 60)  # 40 min – 2 h
 # Global gap between two consecutive numbers dispatched to (different) accounts.

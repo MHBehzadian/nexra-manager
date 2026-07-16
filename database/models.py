@@ -49,6 +49,9 @@ class Number(Base):
     voice_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # How many phase-2 items (voice/image/text) have already been delivered, so
+    # a stop/restart resumes from the next item instead of re-sending them.
+    items_sent: Mapped[int] = mapped_column(Integer, default=0)
     # Channel message this number was first seen in (used for the "Task" edit).
     source_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # Original text of that channel message (so we can rebuild it when editing).

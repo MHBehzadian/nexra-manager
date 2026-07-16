@@ -1067,10 +1067,14 @@ def register_handlers(
             )
 
         elif data == keyboards.CB_CMP_STOP:
-            await event.answer("در حال توقف…")
-            await engine.stop()
+            await event.answer("در حال توقف نرم… (چند ثانیه صبر کن)")
+            await engine.stop(graceful=True)
             await event.edit(
-                "⏸ کمپین متوقف شد.",
+                "⏸ <b>کمپین متوقف شد.</b>\n\n"
+                "ارسال‌های در جریان فرصت داشتند تمام شوند. شماره‌های نیمه‌کاره در "
+                "«▶️ شروع کمپین» بعدی <b>دقیقاً از همان آیتم بعدی</b> ادامه می‌یابند "
+                "— نه تکراری، نه ناقص.\n"
+                "حالا می‌توانی اکانت یا شماره‌ی جدید اضافه کنی.",
                 buttons=keyboards.campaign_back(),
                 parse_mode="html",
             )
