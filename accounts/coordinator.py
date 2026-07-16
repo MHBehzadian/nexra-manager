@@ -24,9 +24,9 @@ from pathlib import Path
 
 from telethon import TelegramClient
 from telethon.errors import UserAlreadyParticipantError
-from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.channels import EditAdminRequest, JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.tl.types import InputPeerChannel
+from telethon.tl.types import ChatAdminRights, InputPeerChannel
 
 from config import Settings, persist_channel_id, persist_report_channel_id
 from utils import get_logger
@@ -293,6 +293,86 @@ class AccountCoordinator:
             if joined:
                 log.info("Account {} joined the channel.", name)
             return joined
+
+    async def promote_all(self) -> dict:
+        """Promote every added account to channel admin with edit rights.
+
+        Needs one account that is the channel owner (or an admin with 'Add
+        Admins'). That account is used to promote all the others (and itself is
+        already an admin). Returns {ok, fail, errors, promoter, error}.
+        """
+        if not self.channel_id:
+            return {"ok": 0, "fail": 0, "error": "کانال تنظیم نشده."}
+        accounts = [a for a in await self.store.list() if a.get("user_id")]
+        if not accounts:
+            return {"ok": 0, "fail": 0, "error": "اکانتی با شناسه‌ی کاربری نیست."}
+        active = [a for a in accounts if a.get("status") == "active"]
+        if not active:
+            return {"ok": 0, "fail": 0, "error": "اکانت فعالی نیست."}
+
+        rights = ChatAdminRights(
+            post_messages=True,
+            edit_messages=True,
+            delete_messages=True,
+            pin_messages=True,
+        )
+        promoter_errors: list[str] = []
+        for promoter in active:
+            try:
+                async with self.account_client(promoter["session_name"]) as pc:
+                    if not await pc.is_user_authorized():
+                        continue
+                    channel = await pc.get_entity(_channel_ref(self.channel_id))
+                    by_id: dict[int, object] = {}
+                    async for part in pc.iter_participants(channel):
+                        by_id[part.id] = part
+
+                    ok, fail, errs = 0, 0, []
+                    others_ok = 0   # successful promotions of OTHER accounts
+                    has_targets = False
+                    rights_blocked = False
+                    for target in accounts:
+                        if target["session_name"] == promoter["session_name"]:
+                            ok += 1  # promoter itself is already admin/owner
+                            continue
+                        has_targets = True
+                        user = by_id.get(target["user_id"])
+                        if user is None:
+                            fail += 1
+                            errs.append(f"{target['session_name']}: عضو کانال نیست")
+                            continue
+                        try:
+                            await pc(EditAdminRequest(channel, user, rights, rank=""))
+                            ok += 1
+                            others_ok += 1
+                        except Exception as exc:
+                            fail += 1
+                            errs.append(f"{target['session_name']}: {type(exc).__name__}")
+                            name = type(exc).__name__
+                            if others_ok == 0 and ("Admin" in name or "Rights" in name or "Forbidden" in name):
+                                rights_blocked = True
+                                break
+                    # Accept this promoter only if it actually promoted someone
+                    # (or there was nobody else to promote). Otherwise try next.
+                    if rights_blocked or (has_targets and others_ok == 0):
+                        promoter_errors.append(f"{promoter['session_name']}: دسترسی Add Admins ندارد")
+                        continue
+                    return {
+                        "ok": ok,
+                        "fail": fail,
+                        "errors": errs,
+                        "promoter": promoter["session_name"],
+                        "error": None,
+                    }
+            except Exception as exc:
+                promoter_errors.append(f"{promoter['session_name']}: {type(exc).__name__}")
+        return {
+            "ok": 0,
+            "fail": len(accounts),
+            "errors": promoter_errors,
+            "error": "هیچ اکانتی دسترسی «Add Admins» نداشت.\n"
+            "یک اکانت را دستی مالک/ادمین با تیک «Add Admins» کن، بعد دوباره بزن.",
+        }
 
     async def join_all(self) -> JoinSummary:
         """Make every stored account join the channel."""

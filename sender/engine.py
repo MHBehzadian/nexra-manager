@@ -49,17 +49,17 @@ log = get_logger(__name__)
 
 _ALBUM_CHUNK = 10  # Telegram allows up to 10 photos per grouped message.
 
-# Channel "Task" markers (the account name is appended by the caller).
+# Channel "Task" markers. The account's session is written under it as @session.
 def _m_greeted(name: str) -> str:
-    return f"✅ سلام ارسال شد — اکانت {name}"
+    return f"✅ سلام ارسال شد\n@{name}"
 
 
 def _m_done(name: str) -> str:
-    return f"✅✅ تکمیل شد — اکانت {name}"
+    return f"✅✅ تکمیل شد\n@{name}"
 
 
 def _m_limited(name: str) -> str:
-    return f"⚠️ اکانت {name} محدود شد؛ انتقال به اکانت دیگر"
+    return f"⚠️ اکانت @{name} محدود شد؛ انتقال به اکانت دیگر"
 
 
 ERR_NO_ACCOUNT = "❌ این شماره اکانت تلگرام ندارد"
@@ -523,7 +523,7 @@ class SenderEngine:
         # Unknown/transient error — record the reason, don't retry endlessly.
         log.exception("Send failed for {} on account {}", phone, acct_name)
         await self.db.set_status(phone, NumberStatus.UNKNOWN)
-        await self._mark(account, phone, f"{ERR_SEND} (اکانت {acct_name}): {err}")
+        await self._mark(account, phone, f"{ERR_SEND} (@{acct_name}): {err}")
         self._bump(acct_phone, "failed")
 
     async def _cooldown_account(self, account: dict, reason: str) -> None:

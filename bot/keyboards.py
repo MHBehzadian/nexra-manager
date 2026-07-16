@@ -43,6 +43,7 @@ CB_ACC_CANCEL = b"acc:cancel"
 # --- Numbers / channel submenu --------------------------------------------- #
 CB_CH_SET = b"num:setchannel"
 CB_CH_JOINALL = b"num:joinall"
+CB_CH_PROMOTE = b"num:promote"
 CB_NUM_READ = b"num:read"
 CB_NUM_STATS = b"num:stats"
 CB_NUM_RESET = b"num:reset"
@@ -129,6 +130,7 @@ def numbers_menu(has_channel: bool) -> list[list[Button]]:
     return [
         [Button.inline(set_label, CB_CH_SET)],
         [Button.inline("🔗 عضویت همه‌ی اکانت‌ها", CB_CH_JOINALL)],
+        [Button.inline("🔑 ادمین‌کردن همه در کانال", CB_CH_PROMOTE)],
         [
             Button.inline("📥 خواندن شماره‌ها", CB_NUM_READ),
             Button.inline("📊 آمار", CB_NUM_STATS),

@@ -832,6 +832,32 @@ def register_handlers(
                 text += "\n\nℹ️ هیچ اکانتی ثبت نشده است."
             await event.edit(text, buttons=keyboards.numbers_back(), parse_mode="html")
 
+        elif data == keyboards.CB_CH_PROMOTE:
+            if not coordinator.has_channel:
+                await event.answer("اول کانال را تنظیم کن.", alert=True)
+                return
+            await event.answer()
+            await event.edit("⏳ در حال ادمین‌کردن اکانت‌ها…", parse_mode="html")
+            res = await coordinator.promote_all()
+            if res.get("error"):
+                text = (
+                    "⛔️ <b>ادمین‌کردن ناموفق</b>\n\n"
+                    f"{html.escape(res['error'])}"
+                )
+                if res.get("errors"):
+                    text += "\n\n" + "\n".join(html.escape(e) for e in res["errors"][:8])
+            else:
+                text = (
+                    "🔑 <b>نتیجه‌ی ادمین‌کردن</b>\n\n"
+                    f"✅ موفق: <b>{res['ok']}</b>\n"
+                    f"❌ ناموفق: <b>{res['fail']}</b>\n"
+                    f"👤 با اکانتِ: <b>{html.escape(str(res.get('promoter', '?')))}</b>\n\n"
+                    "دسترسی‌ها: ارسال، <b>ویرایش پیام‌ها</b>، حذف، سنجاق."
+                )
+                if res.get("errors"):
+                    text += "\n\n" + "\n".join(html.escape(e) for e in res["errors"][:8])
+            await event.edit(text, buttons=keyboards.numbers_back(), parse_mode="html")
+
         elif data == keyboards.CB_NUM_READ:
             if not coordinator.has_channel:
                 await event.answer("اول کانال را تنظیم کن.", alert=True)
