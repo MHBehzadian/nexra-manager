@@ -37,6 +37,7 @@ from telethon.tl.functions.contacts import DeleteContactsRequest, ImportContacts
 from telethon.tl.types import InputPhoneContact
 
 from accounts import manager
+from accounts.coordinator import TASK_MARKER
 from database import NumberStatus
 from utils import get_logger
 
@@ -381,13 +382,13 @@ class SenderEngine:
                 user = await self._resolve_user(client, phone)
                 if user is None:
                     await self.db.set_status(phone, NumberStatus.UNKNOWN)
-                    await self.coord.mark_channel(phone, ERR_NO_ACCOUNT)
+                    await self._mark(account, phone, ERR_NO_ACCOUNT)
                     self._bump(acct_phone, "unknown")
                     return
                 await self._wait_for_window()
                 await self._safe_send(client.send_message, user, content.random_greeting())
                 await self.db.mark_text_sent(phone)
-                await self.coord.mark_channel(phone, _m_greeted(name))
+                await self._mark(account, phone, _m_greeted(name))
                 log.info("[{}] greeting sent to {}", name, phone)
             except asyncio.CancelledError:
                 raise
@@ -418,7 +419,7 @@ class SenderEngine:
             user = await self._resolve_user(client, phone)
             if user is None:
                 await self.db.set_status(phone, NumberStatus.UNKNOWN)
-                await self.coord.mark_channel(phone, ERR_NO_ACCOUNT)
+                await self._mark(account, phone, ERR_NO_ACCOUNT)
                 self._bump(acct_phone, "unknown")
                 return
             await self._send_voice(client, user)
@@ -435,10 +436,43 @@ class SenderEngine:
         name = account.get("session_name", acct_phone)
         await self.db.mark_voice_sent(phone)
         await self.db.set_status(phone, NumberStatus.COMPLETED)
-        await self.coord.mark_channel(phone, _m_done(name))
+        await self._mark(account, phone, _m_done(name))
         self._bump(acct_phone, "sent")
         log.success("[{}] completed {}", name, phone)
         await self._delete_contact(client, user)
+
+    async def _mark(self, account: dict, phone: str, marker: str) -> None:
+        """Edit the number's channel post with its Task status, using the SAME
+        account that messaged it (each account edits its own numbers, via its
+        already-connected client — no bot, no shared editor, no session clash)."""
+        if not self.coord.channel_id:
+            return
+        message_id, source_text = await self.db.get_source(phone)
+        if not message_id:
+            await self.coord._edit_diag(
+                "no_source",
+                "شماره‌ها بدون «شناسه‌ی پیام کانال» ذخیره شده‌اند.\n"
+                "یک‌بار «🗑 پاک‌کردن حافظه» و بعد «📥 خواندن شماره‌ها».",
+            )
+            return
+        client = self._clients.get(account.get("phone"))
+        if client is None:
+            return
+        base = (source_text or phone).split(f"\n\n{TASK_MARKER}")[0].rstrip()
+        new_text = f"{base}\n\n{TASK_MARKER} {marker}".strip()
+        try:
+            entity = await self.coord.get_channel_entity(client)
+            await client.edit_message(entity, message_id, new_text)
+            self.coord._edit_notified.clear()
+        except Exception as exc:
+            name = account.get("session_name")
+            await self.coord._edit_diag(
+                f"edit:{name}:{type(exc).__name__}",
+                f"اکانت «{name}» نتوانست پیام کانال را ادیت کند → "
+                f"<code>{type(exc).__name__}</code>.\n"
+                "این اکانت باید ادمین کانال با «Edit Messages» باشد و پیام‌های شماره "
+                "«فوروارد‌شده» نباشند.",
+            )
 
     async def _send_voice(self, client, user) -> None:
         """Send the forwarded media items in the exact order they were added."""
@@ -465,13 +499,13 @@ class SenderEngine:
             # The *person* restricts who can message them → never retry (any acct).
             log.info("Target issue for {}: {}", phone, err)
             await self.db.set_status(phone, NumberStatus.UNKNOWN)
-            await self.coord.mark_channel(phone, ERR_PRIVACY)
+            await self._mark(account, phone, ERR_PRIVACY)
             self._bump(acct_phone, "unknown")
             return
 
         if kind in ("cooldown", "dead"):
             # Account-side problem → hand this number to another account.
-            await self.coord.mark_channel(phone, _m_limited(acct_name))
+            await self._mark(account, phone, _m_limited(acct_name))
             if phase == 1:
                 await self.db.release_pending(phone)      # not greeted → re-greet elsewhere
             else:
@@ -489,7 +523,7 @@ class SenderEngine:
         # Unknown/transient error — record the reason, don't retry endlessly.
         log.exception("Send failed for {} on account {}", phone, acct_name)
         await self.db.set_status(phone, NumberStatus.UNKNOWN)
-        await self.coord.mark_channel(phone, f"{ERR_SEND} (اکانت {acct_name}): {err}")
+        await self._mark(account, phone, f"{ERR_SEND} (اکانت {acct_name}): {err}")
         self._bump(acct_phone, "failed")
 
     async def _cooldown_account(self, account: dict, reason: str) -> None:
