@@ -44,6 +44,11 @@ IDLE_POLL_SECONDS: int = 120
 # then bring it back into rotation automatically — the limit is usually lifted
 # after a few hours, so the account is NOT removed permanently.
 ACCOUNT_COOLDOWN_SECONDS: int = 4 * 60 * 60  # 4 hours
+# If an account gets this many "no Telegram account" results in a row, it is
+# probably contact-import-limited (not that all those numbers lack Telegram):
+# cool it down and requeue those numbers for another account. The counter resets
+# on any successful resolve, so scattered no-Telegram numbers won't trigger it.
+NO_USER_LIMIT_THRESHOLD: int = 15
 
 
 def random_delay(bounds: tuple[int, int]) -> float:

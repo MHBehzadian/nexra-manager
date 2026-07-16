@@ -138,6 +138,10 @@ class SenderEngine:
         self._next_ready: dict[str, datetime] = {}
         # account phone -> number of in-flight tasks currently sending
         self._in_flight: dict[str, int] = {}
+        # account phone -> consecutive "no Telegram account" results (limit hint)
+        self._consec_no_user: dict[str, int] = {}
+        # account phone -> phones it recently marked unknown (to requeue if limited)
+        self._recent_unknowns: dict[str, list[str]] = {}
         # accounts removed permanently this run: [{"name", "reason"}]
         self._removed: list[dict] = []
         # Numbers greeted-but-not-voiced that need finishing (voice only).
@@ -217,6 +221,8 @@ class SenderEngine:
         self._cooldowns.clear()
         self._next_ready.clear()
         self._in_flight.clear()
+        self._consec_no_user.clear()
+        self._recent_unknowns.clear()
         self._removed.clear()
         self._exhausted_notified = False
         self._running = True
@@ -381,13 +387,14 @@ class SenderEngine:
             try:
                 user = await self._resolve_user(client, phone)
                 if user is None:
-                    await self.db.set_status(phone, NumberStatus.UNKNOWN)
-                    await self._mark(account, phone, ERR_NO_ACCOUNT)
-                    self._bump(acct_phone, "unknown")
+                    await self._on_no_user(account, phone)
                     return
                 await self._wait_for_window()
                 await self._safe_send(client.send_message, user, content.random_greeting())
                 await self.db.mark_text_sent(phone)
+                # A real send happened → this account is healthy again.
+                self._consec_no_user[acct_phone] = 0
+                self._recent_unknowns.pop(acct_phone, None)
                 await self._mark(account, phone, _m_greeted(name))
                 log.info("[{}] greeting sent to {}", name, phone)
             except asyncio.CancelledError:
@@ -418,9 +425,7 @@ class SenderEngine:
         try:
             user = await self._resolve_user(client, phone)
             if user is None:
-                await self.db.set_status(phone, NumberStatus.UNKNOWN)
-                await self._mark(account, phone, ERR_NO_ACCOUNT)
-                self._bump(acct_phone, "unknown")
+                await self._on_no_user(account, phone)
                 return
             await self._send_voice(client, user)
             await self._finish(account, phone, user, client)
@@ -430,6 +435,39 @@ class SenderEngine:
             await self._handle_failure(account, phone, exc, phase=2)
         finally:
             self._in_flight[acct_phone] = max(0, self._in_flight.get(acct_phone, 1) - 1)
+
+    async def _on_no_user(self, account: dict, phone: str) -> None:
+        """Handle a number with no Telegram account.
+
+        No message was sent, so the account does NOT take its 40 min–2 h rest —
+        it moves on quickly. But if an account returns 'no account' for many
+        numbers in a row, it is probably contact-import-limited itself: cool it
+        down and requeue those numbers for other accounts.
+        """
+        acct_phone = account["phone"]
+        # Undo the rest the dispatcher set — nothing was actually sent.
+        self._next_ready.pop(acct_phone, None)
+        await self.db.set_status(phone, NumberStatus.UNKNOWN)
+        await self._mark(account, phone, ERR_NO_ACCOUNT)
+        self._bump(acct_phone, "unknown")
+
+        self._consec_no_user[acct_phone] = self._consec_no_user.get(acct_phone, 0) + 1
+        self._recent_unknowns.setdefault(acct_phone, []).append(phone)
+        if self._consec_no_user[acct_phone] >= content.NO_USER_LIMIT_THRESHOLD:
+            # Likely limited, not that all these numbers lack Telegram → requeue
+            # them for other accounts and rest this one.
+            recent = self._recent_unknowns.pop(acct_phone, [])
+            self._consec_no_user[acct_phone] = 0
+            for p in recent:
+                await self.db.release_pending(p)
+            log.warning(
+                "Account {} got {} 'no account' in a row → likely limited.",
+                account.get("session_name"),
+                len(recent),
+            )
+            await self._cooldown_account(
+                account, f"احتمال محدودیت (import) — {len(recent)} شماره پشت‌سرهم بی‌نتیجه"
+            )
 
     async def _finish(self, account: dict, phone: str, user, client) -> None:
         acct_phone = account["phone"]
