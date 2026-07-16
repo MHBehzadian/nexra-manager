@@ -154,6 +154,8 @@ class SenderEngine:
         self._claim_lock = asyncio.Lock()
         self._running = False
         self._exhausted_notified = False
+        # Low-stock thresholds already alerted (reset when stock rises above them).
+        self._alerted_thresholds: set[int] = set()
         self.stats: dict[str, dict[str, int]] = {}
 
     # ------------------------------------------------------------------ #
@@ -224,6 +226,7 @@ class SenderEngine:
         self._in_flight.clear()
         self._consec_no_user.clear()
         self._recent_unknowns.clear()
+        self._alerted_thresholds.clear()
         self._removed.clear()
         self._exhausted_notified = False
         self._running = True
@@ -374,12 +377,12 @@ class SenderEngine:
                     phone = await self.db.claim_next_pending(acct_phone)
                 if phone is None:
                     # Queue empty — don't rest the account for nothing.
-                    await self._maybe_notify_exhausted()
+                    await self._check_stock()
                     await asyncio.sleep(content.IDLE_POLL_SECONDS)
                     continue
 
-                self._exhausted_notified = False
                 self._mark_rested(acct_phone)
+                await self._check_stock()  # low-stock / exhausted alerts
                 log.info("[dispatch] {} → {}", account.get("session_name"), phone)
                 self._spawn(self._process(account, phone))
 
@@ -502,13 +505,17 @@ class SenderEngine:
         await self._delete_contact(client, user)
 
     async def _mark(self, account: dict, phone: str, marker: str) -> None:
-        """Edit the number's channel post with its Task status, using the SAME
-        account that messaged it (each account edits its own numbers, via its
-        already-connected client — no bot, no shared editor, no session clash)."""
+        """Edit EVERY channel post of this number with its Task status, using the
+        SAME account that messaged it. A number posted several times gets all its
+        copies marked, so a duplicate isn't re-messaged after a reset/re-read."""
         if not self.coord.channel_id:
             return
-        message_id, source_text = await self.db.get_source(phone)
-        if not message_id:
+        sources = await self.db.get_sources(phone)
+        if not sources:
+            mid, txt = await self.db.get_source(phone)  # fallback (old data)
+            if mid:
+                sources = [(mid, txt)]
+        if not sources:
             await self.coord._edit_diag(
                 "no_source",
                 "شماره‌ها بدون «شناسه‌ی پیام کانال» ذخیره شده‌اند.\n"
@@ -518,21 +525,33 @@ class SenderEngine:
         client = self._clients.get(account.get("phone"))
         if client is None:
             return
-        base = (source_text or phone).split(f"\n\n{TASK_MARKER}")[0].rstrip()
-        new_text = f"{base}\n\n{TASK_MARKER} {marker}".strip()
         try:
             entity = await self.coord.get_channel_entity(client)
-            await client.edit_message(entity, message_id, new_text)
-            self.coord._edit_notified.clear()
         except Exception as exc:
-            name = account.get("session_name")
-            await self.coord._edit_diag(
-                f"edit:{name}:{type(exc).__name__}",
-                f"اکانت «{name}» نتوانست پیام کانال را ادیت کند → "
-                f"<code>{type(exc).__name__}</code>.\n"
-                "این اکانت باید ادمین کانال با «Edit Messages» باشد و پیام‌های شماره "
-                "«فوروارد‌شده» نباشند.",
-            )
+            await self._mark_error(account, exc)
+            return
+        last_exc = None
+        for message_id, source_text in sources:
+            base = (source_text or phone).split(f"\n\n{TASK_MARKER}")[0].rstrip()
+            new_text = f"{base}\n\n{TASK_MARKER} {marker}".strip()
+            try:
+                await client.edit_message(entity, message_id, new_text)
+            except Exception as exc:
+                last_exc = exc
+        if last_exc is None:
+            self.coord._edit_notified.clear()
+        else:
+            await self._mark_error(account, last_exc)
+
+    async def _mark_error(self, account: dict, exc: Exception) -> None:
+        name = account.get("session_name")
+        await self.coord._edit_diag(
+            f"edit:{name}:{type(exc).__name__}",
+            f"اکانت «{name}» نتوانست پیام کانال را ادیت کند → "
+            f"<code>{type(exc).__name__}</code>.\n"
+            "این اکانت باید ادمین کانال با «Edit Messages» باشد و پیام‌های شماره "
+            "«فوروارد‌شده» نباشند.",
+        )
 
     async def _send_voice(self, client, user, phone: str) -> None:
         """Send the forwarded media items in order, with a random 30 s–2 min gap
@@ -675,13 +694,30 @@ class SenderEngine:
         # Goes to the admin DM and the report channel (if configured).
         await self.coord.notify(text)
 
-    async def _maybe_notify_exhausted(self) -> None:
-        if self._exhausted_notified:
+    async def _alert(self, text: str) -> None:
+        """Send an operational alert straight to the admin's private chat."""
+        if self.bot_client is None or self.admin_id is None:
             return
-        counts = await self.db.counts_by_status()
-        if counts.get("pending", 0) == 0 and counts.get("used", 0) == 0:
-            self._exhausted_notified = True
-            await self._notify_admin(
-                "⚠️ شماره‌های <b>pending</b> تمام شدند. "
-                "برای ادامه، شماره‌های جدید را از کانال بخوان."
-            )
+        try:
+            await self.bot_client.send_message(self.admin_id, text, parse_mode="html")
+        except Exception:
+            log.exception("Failed to send alert to admin")
+
+    async def _check_stock(self) -> None:
+        """Alert the admin when pending numbers drop below thresholds / run out."""
+        pending = (await self.db.counts_by_status()).get("pending", 0)
+        if pending == 0:
+            if not self._exhausted_notified:
+                self._exhausted_notified = True
+                await self._alert(
+                    "🔚 <b>شماره‌های صف تمام شدند!</b>\n"
+                    "برای ادامه، شماره‌ی جدید در کانال بگذار و «📥 خواندن شماره‌ها» را بزن."
+                )
+            return
+        self._exhausted_notified = False
+        for th in content.LOW_STOCK_THRESHOLDS:
+            if pending <= th and th not in self._alerted_thresholds:
+                self._alerted_thresholds.add(th)
+                await self._alert(f"⚠️ فقط <b>{pending}</b> شماره باقی مانده (زیر {th}).")
+            elif pending > th:
+                self._alerted_thresholds.discard(th)

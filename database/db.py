@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from utils import get_logger
 
-from .models import Base, Number, NumberStatus, ReadCursor
+from .models import Base, Number, NumberSource, NumberStatus, ReadCursor
 
 log = get_logger(__name__)
 
@@ -93,6 +93,31 @@ class Database:
             log.info("Inserted {} new number(s).", added)
         return added
 
+    async def add_sources(self, items: Iterable[tuple[str, int | None, str | None]]) -> None:
+        """Record every (phone, message_id) occurrence, so all duplicates of a
+        number can be Task-marked. Ignores rows already present."""
+        async with self._session() as session:
+            for phone, msg_id, source_text in items:
+                if msg_id is None:
+                    continue
+                stmt = (
+                    sqlite_insert(NumberSource)
+                    .values(phone=phone, message_id=msg_id, source_text=source_text)
+                    .on_conflict_do_nothing(index_elements=["phone", "message_id"])
+                )
+                await session.execute(stmt)
+            await session.commit()
+
+    async def get_sources(self, phone: str) -> list[tuple[int, str | None]]:
+        """All (message_id, source_text) occurrences of a phone in the channel."""
+        async with self._session() as session:
+            rows = await session.execute(
+                select(NumberSource.message_id, NumberSource.source_text).where(
+                    NumberSource.phone == phone
+                )
+            )
+            return [(r[0], r[1]) for r in rows.all()]
+
     async def get_source(self, phone: str) -> tuple[int | None, str | None]:
         """Return ``(source_message_id, source_text)`` for a number."""
         async with self._session() as session:
@@ -133,6 +158,7 @@ class Database:
             )
             await session.execute(delete(Number))
             await session.execute(delete(ReadCursor))
+            await session.execute(delete(NumberSource))
             await session.commit()
         log.warning("Numbers memory reset — removed {} number(s) and all cursors.", count)
         return count

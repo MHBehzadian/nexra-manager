@@ -43,6 +43,8 @@ BETWEEN_NUMBERS: tuple[int, int] = (40 * 60, 2 * 60 * 60)  # 40 min – 2 h
 DISPATCH_GAP_SECONDS: int = 60  # 1 minute
 # How long the dispatcher sleeps when the queue is empty before checking again.
 IDLE_POLL_SECONDS: int = 120
+# Alert the admin when the pending queue drops to/below each of these counts.
+LOW_STOCK_THRESHOLDS: tuple[int, ...] = (50, 20, 10)
 # When an account is temporarily limited (e.g. PeerFlood), rest it this long and
 # then bring it back into rotation automatically — the limit is usually lifted
 # after a few hours, so the account is NOT removed permanently.

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, Integer, String
+from sqlalchemy import BigInteger, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -71,6 +71,20 @@ class Number(Base):
             "source_message_id": self.source_message_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class NumberSource(Base):
+    """Every channel message a phone number appears in (a number can be posted
+    several times). Used to mark ALL occurrences of a number with Task, so a
+    duplicate isn't re-messaged after a reset/re-read."""
+
+    __tablename__ = "number_sources"
+    __table_args__ = (UniqueConstraint("phone", "message_id", name="uq_phone_msg"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    phone: Mapped[str] = mapped_column(String(24), index=True)
+    message_id: Mapped[int] = mapped_column(BigInteger)
+    source_text: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
 
 class ReadCursor(Base):

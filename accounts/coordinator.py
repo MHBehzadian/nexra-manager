@@ -442,6 +442,9 @@ class AccountCoordinator:
 
                 if batch:
                     result.new_numbers = await self.db.add_numbers(batch)
+                    # Record EVERY occurrence (incl. duplicates) so all copies of
+                    # a number get Task-marked when it's messaged.
+                    await self.db.add_sources(batch)
                 if max_id > last_id:
                     await self.db.set_cursor(phone, self.channel_id, max_id)
                     result.last_id = max_id
