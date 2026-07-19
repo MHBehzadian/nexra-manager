@@ -212,16 +212,21 @@ class AccountCoordinator:
 
     def remember_bot_peer(self, chat) -> None:
         """Cache a channel's access hash (from a forwarded message) so the bot can
-        post to it later even if it's private and can't be resolved by id."""
+        post to it later even if it's private and can't be resolved by id.
+
+        Stored under several id variants so it matches whatever format the report
+        channel was configured with (marked -100 id, or the raw id)."""
         peer_id = getattr(chat, "id", None)
         access_hash = getattr(chat, "access_hash", None)
         if peer_id is None or access_hash is None:
             return
+        val = [int(peer_id), int(access_hash)]
         try:
-            marked = str(get_peer_id(chat))
+            self._bot_peers[str(get_peer_id(chat))] = val  # e.g. -1001234567890
         except Exception:
-            marked = str(peer_id)
-        self._bot_peers[marked] = [int(peer_id), int(access_hash)]
+            pass
+        self._bot_peers[str(peer_id)] = val                # raw id
+        self._bot_peers["-100" + str(peer_id)] = val       # bot-api marked form
         try:
             _BOT_PEERS_PATH.parent.mkdir(parents=True, exist_ok=True)
             _BOT_PEERS_PATH.write_text(json.dumps(self._bot_peers), encoding="utf-8")
@@ -236,10 +241,27 @@ class AccountCoordinator:
         c = channel_id.strip()
         if c.startswith("@") or "t.me/" in c or c.startswith("+"):
             return _channel_ref(channel_id)
-        peer = self._bot_peers.get(c)
-        if peer:
-            return InputPeerChannel(int(peer[0]), int(peer[1]))
+        # Try several id variants against the cache.
+        variants = {c}
+        if c.startswith("-100") and c[4:].isdigit():
+            variants.add(c[4:])
+        elif c.lstrip("-").isdigit():
+            variants.update({"-100" + c.lstrip("-"), c.lstrip("-")})
+        for key in variants:
+            peer = self._bot_peers.get(key)
+            if peer:
+                return InputPeerChannel(int(peer[0]), int(peer[1]))
         return _channel_ref(channel_id)
+
+    def set_report_channel_from_chat(self, chat) -> str | None:
+        """Set the report channel from a forwarded channel (bulletproof: caches
+        the access hash AND uses the exact id the bot knows)."""
+        self.remember_bot_peer(chat)
+        try:
+            marked = str(get_peer_id(chat))
+        except Exception:
+            marked = str(getattr(chat, "id", ""))
+        return self.set_report_channel(marked)
 
     def _notify_targets(self):
         """Where reports/notices go: the report channel only (if set), else admin."""
@@ -252,13 +274,17 @@ class AccountCoordinator:
         if self._report_diag_notified or self.bot_client is None:
             return
         self._report_diag_notified = True
+        known = ", ".join(list(self._bot_peers.keys())[:6]) or "هیچ"
         try:
             await self.bot_client.send_message(
                 self.settings.admin_id,
                 "⚠️ <b>ارسال به کانال گزارش ناموفق بود</b>\n"
-                f"خطا: <code>{type(exc).__name__}</code>\n\n"
-                "اگر کانال گزارش خصوصی است، یک پیام از آن کانال را برای بات "
-                "<b>فوروارد</b> کن (تا شناسه‌اش را یاد بگیرد) و مطمئن شو بات آنجا ادمین است.",
+                f"خطا: <code>{type(exc).__name__}</code>\n"
+                f"آیدی کانال گزارش: <code>{html.escape(str(self.report_channel_id))}</code>\n"
+                f"کانال‌های شناخته‌شده‌ی بات: <code>{html.escape(known)}</code>\n\n"
+                "<b>راه مطمئن:</b> برو 🚀 کمپین → 📮 تنظیم کانال گزارش، و این بار "
+                "یک پیام را <b>از همان کانال گزارش فوروارد کن</b> (به‌جای تایپ آیدی). "
+                "بات باید در آن کانال ادمین باشد.",
                 parse_mode="html",
             )
         except Exception:

@@ -579,6 +579,32 @@ def register_handlers(
 
     # ---- set report-channel step ---------------------------------------- #
     async def _step_set_report_channel(event, text: str) -> None:
+        # Bulletproof path: the admin FORWARDS a message from the report channel.
+        if event.message.forward is not None:
+            try:
+                chat = await event.message.forward.get_chat()
+            except Exception:
+                chat = None
+            if not isinstance(chat, (Channel, Chat)):
+                await event.respond(
+                    "⚠️ این پیام از یک کانال فوروارد نشده. یک پیام را از داخل "
+                    "کانال گزارش فوروارد کن.",
+                    buttons=keyboards.cancel_campaign(),
+                )
+                return
+            norm = coordinator.set_report_channel_from_chat(chat)
+            state.clear(event.sender_id)
+            title = getattr(chat, "title", None) or norm
+            await event.respond(
+                f"✅ کانال گزارش از روی فوروارد تنظیم شد: <b>{html.escape(str(title))}</b>\n"
+                f"<code>{html.escape(str(norm or ''))}</code>\n\n"
+                "شناسه و دسترسی بات ذخیره شد؛ گزارش‌ها به این کانال می‌روند.\n"
+                "<i>مطمئن شو بات آنجا ادمین است.</i>",
+                buttons=keyboards.campaign_menu(engine.is_running),
+                parse_mode="html",
+            )
+            return
+
         value = text.strip()
         if value in {"-", "off", "حذف", "خالی"}:
             coordinator.set_report_channel(None)
@@ -1089,7 +1115,9 @@ def register_handlers(
             await event.edit(
                 "📮 <b>تنظیم کانال گزارش</b>\n\n"
                 f"مقدار فعلی: <code>{html.escape(current)}</code>\n\n"
-                "شناسه‌ی کانال گزارش را بفرست (@username یا id عددی یا لینک).\n"
+                "✅ <b>روش مطمئن:</b> یک پیام را از <b>داخل کانال گزارش فوروارد کن</b> "
+                "(تا بات شناسه و دسترسی‌اش را یاد بگیرد).\n"
+                "یا یک <code>@username</code> عمومی بفرست.\n"
                 "برای حذف، «-» بفرست.\n\n"
                 "<i>بات باید در آن کانال ادمین باشد.</i>",
                 buttons=keyboards.cancel_campaign(),
