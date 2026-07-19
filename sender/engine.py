@@ -63,6 +63,10 @@ def _m_limited(name: str) -> str:
     return f"⚠️ اکانت @{name} محدود شد؛ انتقال به اکانت دیگر"
 
 
+def _m_no_account(name: str) -> str:
+    return f"❌ این شماره اکانت تلگرام ندارد\nچک‌شده با @{name}"
+
+
 ERR_NO_ACCOUNT = "❌ این شماره اکانت تلگرام ندارد"
 ERR_PRIVACY = "❌ کاربر اجازه‌ی پیام از غریبه را نداده؛ دیگر تلاش نمی‌شود"
 ERR_SEND = "❌ خطا در ارسال"
@@ -473,7 +477,7 @@ class SenderEngine:
         # Undo the rest the dispatcher set — nothing was actually sent.
         self._next_ready.pop(acct_phone, None)
         await self.db.set_status(phone, NumberStatus.UNKNOWN)
-        await self._mark(account, phone, ERR_NO_ACCOUNT)
+        await self._mark(account, phone, _m_no_account(account.get("session_name", acct_phone)))
         self._bump(acct_phone, "unknown")
 
         self._consec_no_user[acct_phone] = self._consec_no_user.get(acct_phone, 0) + 1
@@ -561,7 +565,7 @@ class SenderEngine:
         start = await self.db.get_items_sent(phone)
         for i in range(start, len(items)):
             if i > start:
-                await asyncio.sleep(content.random_delay(content.BETWEEN_ITEMS))
+                await asyncio.sleep(content.random_delay(self.cfg.item_delay()))
             await self._wait_for_window()
             item = items[i]
             kind = item["type"]

@@ -8,7 +8,7 @@ window (06:00–24:00 Asia/Tehran).
 from __future__ import annotations
 
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 try:
     from zoneinfo import ZoneInfo
@@ -103,3 +103,30 @@ def seconds_until_daily_report(now: datetime | None = None) -> float:
     if now >= target:
         target += timedelta(days=1)
     return max(1.0, (target - now).total_seconds())
+
+
+def seconds_until_next_6h(now: datetime | None = None) -> float:
+    """Seconds until the next Tehran 6-hour boundary (00, 06, 12, 18)."""
+    now = now or _tehran_now()
+    nxt = ((now.hour // 6) + 1) * 6
+    if nxt >= 24:
+        target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    else:
+        target = now.replace(hour=nxt, minute=0, second=0, microsecond=0)
+    return max(1.0, (target - now).total_seconds())
+
+
+def seconds_until_midnight(now: datetime | None = None) -> float:
+    """Seconds until the next Tehran 00:00."""
+    now = now or _tehran_now()
+    target = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    return max(1.0, (target - now).total_seconds())
+
+
+def tehran_day_start_utc(now: datetime | None = None) -> datetime:
+    """UTC datetime for the start of the current Tehran day (00:00 Tehran)."""
+    now = now or _tehran_now()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if start.tzinfo is None:  # fallback path without zoneinfo
+        return start
+    return start.astimezone(timezone.utc)

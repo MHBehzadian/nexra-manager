@@ -44,6 +44,7 @@ from .state import (
     AddStep,
     CollectMediaConversation,
     SetChannelConversation,
+    SetItemDelayConversation,
     SetReportChannelConversation,
     SetVoiceDelayConversation,
     StateManager,
@@ -549,6 +550,33 @@ def register_handlers(
             parse_mode="html",
         )
 
+    # ---- set item-delay step (seconds between phase-2 items) ------------ #
+    async def _step_set_item_delay(event, text: str) -> None:
+        parts = re.split(r"[\s,\-–]+", text.strip())
+        nums = [p for p in parts if p]
+        if len(nums) != 2 or not all(p.isdigit() for p in nums):
+            await event.respond(
+                "⚠️ فرمت اشتباه است. دو عدد (ثانیه) بفرست: «حداقل حداکثر»\n"
+                "مثال: <code>30 120</code>",
+                buttons=keyboards.cancel_campaign(),
+                parse_mode="html",
+            )
+            return
+        low_s, high_s = int(nums[0]), int(nums[1])
+        if low_s <= 0 or high_s < low_s:
+            await event.respond(
+                "⚠️ باید حداقل بزرگ‌تر از صفر و حداکثر ≥ حداقل باشد. دوباره بفرست:",
+                buttons=keyboards.cancel_campaign(),
+            )
+            return
+        engine.cfg.set_item_delay(low_s, high_s)
+        state.clear(event.sender_id)
+        await event.respond(
+            f"✅ فاصله‌ی بین محتوا تنظیم شد: بین <b>{low_s}</b> تا <b>{high_s}</b> ثانیه.",
+            buttons=keyboards.campaign_menu(engine.is_running),
+            parse_mode="html",
+        )
+
     # ---- set report-channel step ---------------------------------------- #
     async def _step_set_report_channel(event, text: str) -> None:
         value = text.strip()
@@ -653,7 +681,11 @@ def register_handlers(
                 await event.respond("✅ عملیات لغو شد.", buttons=keyboards.accounts_menu())
             elif isinstance(
                 cleared,
-                (SetVoiceDelayConversation, SetReportChannelConversation),
+                (
+                    SetVoiceDelayConversation,
+                    SetItemDelayConversation,
+                    SetReportChannelConversation,
+                ),
             ):
                 await event.respond(
                     "✅ عملیات لغو شد.", buttons=keyboards.campaign_menu(engine.is_running)
@@ -677,6 +709,8 @@ def register_handlers(
                 await _step_set_channel(event, text)
             elif isinstance(conv, SetVoiceDelayConversation):
                 await _step_set_voice_delay(event, text)
+            elif isinstance(conv, SetItemDelayConversation):
+                await _step_set_item_delay(event, text)
             elif isinstance(conv, SetReportChannelConversation):
                 await _step_set_report_channel(event, text)
             elif conv.step is AddStep.NAME:
@@ -951,6 +985,7 @@ def register_handlers(
                 state.get(event.sender_id),
                 (
                     SetVoiceDelayConversation,
+                    SetItemDelayConversation,
                     SetReportChannelConversation,
                     CollectMediaConversation,
                 ),
@@ -1033,6 +1068,19 @@ def register_handlers(
                 parse_mode="html",
             )
 
+        elif data == keyboards.CB_CMP_ITEM_DELAY:
+            await event.answer()
+            state.clear(event.sender_id)
+            state.start_set_item_delay(event.sender_id)
+            low, high = engine.cfg.item_delay()
+            await event.edit(
+                "⏱ <b>فاصله‌ی بین محتوا (پیام‌های دوم)</b>\n\n"
+                f"مقدار فعلی: بین <b>{low}</b> تا <b>{high}</b> ثانیه.\n\n"
+                "دو عدد (ثانیه) بفرست: «حداقل حداکثر»\nمثال: <code>30 120</code>",
+                buttons=keyboards.cancel_campaign(),
+                parse_mode="html",
+            )
+
         elif data == keyboards.CB_CMP_REPORT_CH:
             await event.answer()
             state.clear(event.sender_id)
@@ -1068,7 +1116,12 @@ def register_handlers(
 
         elif data == keyboards.CB_CMP_STOP:
             await event.answer("در حال توقف نرم… (چند ثانیه صبر کن)")
+            status_snapshot = engine.status()  # capture before accounts are cleared
             await engine.stop(graceful=True)
+            try:
+                await reporter.send_stop_report(status_snapshot)
+            except Exception:
+                log.exception("stop report failed")
             await event.edit(
                 "⏸ <b>کمپین متوقف شد.</b>\n\n"
                 "ارسال‌های در جریان فرصت داشتند تمام شوند. شماره‌های نیمه‌کاره در "
@@ -1187,12 +1240,12 @@ def register_handlers(
             return
         title = getattr(chat, "title", None) or "کانال"
 
-        # Remember the bot's access hash for this channel so it can edit posts
+        # Remember this channel's access hash so the bot can post to / edit it
         # later (private channels can't be resolved by a bot from a bare id).
-        if str(getattr(chat, "id", "")) and coordinator.channel_id:
-            saved = coordinator.save_bot_channel(chat)
-            if saved:
-                log.info("Cached bot channel access from forwarded message.")
+        # This is how the report channel becomes reachable.
+        coordinator.remember_bot_peer(chat)
+        if coordinator.channel_id:
+            coordinator.save_bot_channel(chat)
 
         # 1) Post test.
         base = "🤖 ربات call center فعال می‌باشد ✅"

@@ -45,6 +45,11 @@ class SetVoiceDelayConversation:
 
 
 @dataclass
+class SetItemDelayConversation:
+    """Single-step flow: waiting for 'min max' SECONDS between phase-2 items."""
+
+
+@dataclass
 class SetReportChannelConversation:
     """Single-step flow: waiting for the admin to send the report-channel id."""
 
@@ -64,6 +69,7 @@ Conversation = (
     AddAccountConversation
     | SetChannelConversation
     | SetVoiceDelayConversation
+    | SetItemDelayConversation
     | SetReportChannelConversation
     | SetVoiceTextConversation
     | CollectMediaConversation
@@ -94,6 +100,11 @@ class StateManager:
 
     def start_set_voice_delay(self, user_id: int) -> SetVoiceDelayConversation:
         conv = SetVoiceDelayConversation()
+        self._states[user_id] = conv
+        return conv
+
+    def start_set_item_delay(self, user_id: int) -> SetItemDelayConversation:
+        conv = SetItemDelayConversation()
         self._states[user_id] = conv
         return conv
 

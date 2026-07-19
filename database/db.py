@@ -93,6 +93,33 @@ class Database:
             log.info("Inserted {} new number(s).", added)
         return added
 
+    async def add_greeted_numbers(
+        self, items: Iterable[tuple[str, int | None, str | None]]
+    ) -> int:
+        """Insert numbers already greeted in the channel (one Task tick) as 'used'
+        with text_sent_at set, so they resume at the voice step. Ignores existing."""
+        added = 0
+        async with self._session() as session:
+            for phone, msg_id, source_text in items:
+                stmt = (
+                    sqlite_insert(Number)
+                    .values(
+                        phone=phone,
+                        status=NumberStatus.USED,
+                        text_sent_at=_utcnow(),
+                        source_message_id=msg_id,
+                        source_text=source_text,
+                    )
+                    .on_conflict_do_nothing(index_elements=["phone"])
+                )
+                result = await session.execute(stmt)
+                if result.rowcount and result.rowcount > 0:
+                    added += 1
+            await session.commit()
+        if added:
+            log.info("Inserted {} greeted-but-not-voiced number(s) to resume.", added)
+        return added
+
     async def add_sources(self, items: Iterable[tuple[str, int | None, str | None]]) -> None:
         """Record every (phone, message_id) occurrence, so all duplicates of a
         number can be Task-marked. Ignores rows already present."""

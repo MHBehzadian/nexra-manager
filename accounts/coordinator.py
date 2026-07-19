@@ -27,6 +27,7 @@ from telethon.errors import UserAlreadyParticipantError
 from telethon.tl.functions.channels import EditAdminRequest, JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.types import ChatAdminRights, InputPeerChannel
+from telethon.utils import get_peer_id
 
 from config import Settings, persist_channel_id, persist_report_channel_id
 from utils import get_logger
@@ -38,6 +39,9 @@ from .store import AccountStore
 # resolved by a bot from a bare id — BotMethodInvalidError — so we cache the
 # access hash the bot learns from a forwarded message).
 _BOT_CH_PATH = Path(__file__).resolve().parent.parent / "data" / "bot_channel.json"
+# Channels the bot can reach (marked_id -> access_hash), learned from forwards.
+# Lets the bot post to a private report channel it otherwise can't resolve by id.
+_BOT_PEERS_PATH = Path(__file__).resolve().parent.parent / "data" / "bot_peers.json"
 
 log = get_logger(__name__)
 
@@ -108,6 +112,9 @@ class AccountCoordinator:
         # Cached InputPeerChannel the bot can use to edit posts (see _BOT_CH_PATH).
         self._bot_channel_input: InputPeerChannel | None = None
         self._load_bot_channel()
+        # marked_id(str) -> [raw_id, access_hash] for channels the bot can post to.
+        self._bot_peers: dict[str, list[int]] = self._load_bot_peers()
+        self._report_diag_notified = False
 
     # ------------------------------------------------------------------ #
     # Channel configuration
@@ -183,6 +190,7 @@ class AccountCoordinator:
         """Persist a new report channel to .env and update the in-memory value."""
         norm = persist_report_channel_id(value)
         self.report_channel_id = norm
+        self._report_diag_notified = False
         log.info("Coordinator report channel set to {}", norm)
         return norm
 
@@ -193,28 +201,83 @@ class AccountCoordinator:
     # ------------------------------------------------------------------ #
     # Admin / report-channel notifications
     # ------------------------------------------------------------------ #
-    def _notify_targets(self) -> list:
-        """Where reports/notices go.
+    # ---- bot-reachable channels (learned from forwarded messages) ------- #
+    def _load_bot_peers(self) -> dict[str, list[int]]:
+        try:
+            if _BOT_PEERS_PATH.exists():
+                return json.loads(_BOT_PEERS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            log.exception("Could not load bot_peers.json")
+        return {}
 
-        If a report channel is configured, everything goes there ONLY. Otherwise
-        it falls back to the admin's private chat.
-        """
+    def remember_bot_peer(self, chat) -> None:
+        """Cache a channel's access hash (from a forwarded message) so the bot can
+        post to it later even if it's private and can't be resolved by id."""
+        peer_id = getattr(chat, "id", None)
+        access_hash = getattr(chat, "access_hash", None)
+        if peer_id is None or access_hash is None:
+            return
+        try:
+            marked = str(get_peer_id(chat))
+        except Exception:
+            marked = str(peer_id)
+        self._bot_peers[marked] = [int(peer_id), int(access_hash)]
+        try:
+            _BOT_PEERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _BOT_PEERS_PATH.write_text(json.dumps(self._bot_peers), encoding="utf-8")
+        except OSError:
+            log.exception("Could not persist bot_peers.json")
+        self._report_diag_notified = False  # allow a fresh diagnostic if needed
+
+    def _bot_target(self, channel_id: str | None):
+        """A target the bot can send to: username/link as-is, numeric via cache."""
+        if not channel_id:
+            return None
+        c = channel_id.strip()
+        if c.startswith("@") or "t.me/" in c or c.startswith("+"):
+            return _channel_ref(channel_id)
+        peer = self._bot_peers.get(c)
+        if peer:
+            return InputPeerChannel(int(peer[0]), int(peer[1]))
+        return _channel_ref(channel_id)
+
+    def _notify_targets(self):
+        """Where reports/notices go: the report channel only (if set), else admin."""
         if self.report_channel_id:
-            return [_channel_ref(self.report_channel_id)]
+            return [self._bot_target(self.report_channel_id)]
         return [self.settings.admin_id]
 
+    async def _report_diag(self, exc: Exception) -> None:
+        """Tell the admin (directly) why the report channel send failed, once."""
+        if self._report_diag_notified or self.bot_client is None:
+            return
+        self._report_diag_notified = True
+        try:
+            await self.bot_client.send_message(
+                self.settings.admin_id,
+                "⚠️ <b>ارسال به کانال گزارش ناموفق بود</b>\n"
+                f"خطا: <code>{type(exc).__name__}</code>\n\n"
+                "اگر کانال گزارش خصوصی است، یک پیام از آن کانال را برای بات "
+                "<b>فوروارد</b> کن (تا شناسه‌اش را یاد بگیرد) و مطمئن شو بات آنجا ادمین است.",
+                parse_mode="html",
+            )
+        except Exception:
+            log.exception("Failed to DM report diagnostic")
+
     async def notify(self, text: str) -> None:
-        """Send a text notice to the admin (and the report channel, if set)."""
+        """Send a text notice to the report channel (or admin DM)."""
         if self.bot_client is None:
             return
         for target in self._notify_targets():
             try:
                 await self.bot_client.send_message(target, text, parse_mode="html")
-            except Exception:
-                log.exception("Failed to notify target {}", target)
+            except Exception as exc:
+                log.warning("Failed to notify target {}: {}", target, exc)
+                if self.report_channel_id:
+                    await self._report_diag(exc)
 
     async def send_report_file(self, path: str, caption: str = "") -> bool:
-        """Send a file to the admin (and the report channel, if set)."""
+        """Send a file to the report channel (or admin DM)."""
         if self.bot_client is None:
             return False
         sent = False
@@ -222,8 +285,10 @@ class AccountCoordinator:
             try:
                 await self.bot_client.send_file(target, path, caption=caption)
                 sent = True
-            except Exception:
-                log.exception("Failed to send file to target {}", target)
+            except Exception as exc:
+                log.warning("Failed to send file to target {}: {}", target, exc)
+                if self.report_channel_id:
+                    await self._report_diag(exc)
         return sent
 
     # ------------------------------------------------------------------ #
@@ -414,7 +479,8 @@ class AccountCoordinator:
 
         last_id = await self.db.get_cursor(phone)
         result.last_id = last_id
-        batch: list[tuple[str, int, str]] = []
+        batch: list[tuple[str, int, str]] = []          # new pending numbers
+        greeted_batch: list[tuple[str, int, str]] = []  # one-tick → resume voice
 
         try:
             async with self._account_client(name) as client:
@@ -434,17 +500,31 @@ class AccountCoordinator:
                     if message.id > max_id:
                         max_id = message.id
                     text = message.message or ""  # voice/media messages have no text
-                    # Skip messages already marked as taken ("Task", any case).
-                    if TASK_MARKER.lower() in text.lower():
+                    low = text.lower()
+                    matches = PHONE_IN_TEXT_RE.findall(text)
+                    if not matches:
                         continue
-                    for match in PHONE_IN_TEXT_RE.findall(text):
+                    has_task = "task" in low
+                    if has_task and "✅✅" in text:
+                        continue  # fully done (two ticks) → skip
+                    if has_task and "✅" in text:
+                        # One tick = greeted but not voiced → resume at voice step.
+                        for match in matches:
+                            greeted_batch.append((match, message.id, text[:512]))
+                        continue
+                    if has_task:
+                        continue  # ❌ / other Task marker → skip
+                    for match in matches:
                         batch.append((match, message.id, text[:512]))
 
                 if batch:
                     result.new_numbers = await self.db.add_numbers(batch)
-                    # Record EVERY occurrence (incl. duplicates) so all copies of
-                    # a number get Task-marked when it's messaged.
-                    await self.db.add_sources(batch)
+                if greeted_batch:
+                    await self.db.add_greeted_numbers(greeted_batch)
+                # Record EVERY occurrence (incl. duplicates + greeted) so all copies
+                # of a number get Task-marked when it's messaged.
+                if batch or greeted_batch:
+                    await self.db.add_sources(batch + greeted_batch)
                 if max_id > last_id:
                     await self.db.set_cursor(phone, self.channel_id, max_id)
                     result.last_id = max_id

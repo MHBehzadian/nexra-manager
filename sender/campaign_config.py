@@ -59,6 +59,24 @@ class CampaignConfig:
         self._write(data)
         log.info("Voice delay set to {}–{}s", min_seconds, max_seconds)
 
+    def item_delay(self) -> tuple[int, int]:
+        """Return the (min, max) SECONDS gap between phase-2 items (voice/image/text)."""
+        data = self._read()
+        low = data.get("item_delay_min")
+        high = data.get("item_delay_max")
+        if isinstance(low, int) and isinstance(high, int) and 0 < low <= high:
+            return (low, high)
+        return content.BETWEEN_ITEMS
+
+    def set_item_delay(self, min_seconds: int, max_seconds: int) -> None:
+        if min_seconds <= 0 or max_seconds < min_seconds:
+            raise ValueError("Invalid item-delay range")
+        data = self._read()
+        data["item_delay_min"] = int(min_seconds)
+        data["item_delay_max"] = int(max_seconds)
+        self._write(data)
+        log.info("Item delay set to {}–{}s", min_seconds, max_seconds)
+
     def voice_text(self) -> str | None:
         """Optional text message sent together with the voice (phase 2)."""
         data = self._read()
